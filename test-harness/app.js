@@ -36,6 +36,7 @@
       this.closeCount = 0;
       this.clearCount = 0;
       this.pasteCount = 0;
+      this.settingsOpenCount = 0;
     }
 
     search(query) {
@@ -73,6 +74,10 @@
       this.items = [];
       this.clearCount += 1;
       this.beepCount += 1;
+    }
+
+    openSettings() {
+      this.settingsOpenCount += 1;
     }
 
     pasteToTarget(target) {
@@ -115,6 +120,7 @@
   const search = document.querySelector('[data-testid="search"]');
   const shelfScroll = document.querySelector('[data-testid="shelf-scroll"]');
   const shelf = document.querySelector('[data-testid="shelf"]');
+  const settingsButton = document.querySelector('[data-testid="open-settings"]');
   const clearButton = document.querySelector('[data-testid="clear-history"]');
   const openButton = document.querySelector('[data-testid="open"]');
   const target = document.querySelector('[data-testid="target"]');
@@ -162,6 +168,17 @@
     backend.clearHistory();
     search.value = '';
     render();
+  }
+
+  function openSettings() {
+    if (clickTimeoutId) {
+      clearTimeout(clickTimeoutId);
+      clickTimeoutId = 0;
+      clickItemId = null;
+    }
+
+    backend.openSettings();
+    closePastebar();
   }
 
   function activate(item, paste) {
@@ -228,6 +245,7 @@
   }
 
   openButton.addEventListener('click', openPastebar);
+  settingsButton.addEventListener('click', openSettings);
   clearButton.addEventListener('click', clearHistory);
   search.addEventListener('input', render);
   shelfScroll.addEventListener('wheel', event => {
@@ -260,6 +278,7 @@
       itemIds: backend.items.map(item => item.id),
       isOpen: overlay.classList.contains('is-open'),
       pasteCount: backend.pasteCount,
+      settingsOpenCount: backend.settingsOpenCount,
       targetText: target.value,
     }),
   };

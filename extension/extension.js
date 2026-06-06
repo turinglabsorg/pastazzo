@@ -17,8 +17,9 @@ const BAR_HEIGHT = 252;
 const BAR_PADDING = 14;
 const CARD_GAP = 8;
 const CARD_SIZE = 160;
-const TOOLBAR_WIDTH = 38;
 const TOOL_BUTTON_SIZE = 38;
+const TOOL_BUTTON_COUNT = 2;
+const TOOLBAR_WIDTH = TOOL_BUTTON_SIZE * TOOL_BUTTON_COUNT + CARD_GAP * (TOOL_BUTTON_COUNT - 1);
 const DOUBLE_CLICK_DELAY_MS = 220;
 const SCROLL_ANIMATION_MS = 160;
 const IMAGE_MIMES = ['image/png', 'image/jpeg', 'image/jpg', 'image/webp', 'image/gif', 'image/bmp', 'image/tiff'];
@@ -26,7 +27,7 @@ const FEEDBACK_SOUND = '/usr/share/sounds/Yaru/stereo/message.oga';
 
 const PastazzoPanel = GObject.registerClass(
 class PastazzoPanel extends St.Widget {
-    _init() {
+    _init(openPreferences) {
         super._init({
             style_class: 'pastebar-overlay',
             reactive: true,
@@ -42,6 +43,7 @@ class PastazzoPanel extends St.Widget {
         this._clickIndex = -1;
         this._scrollTarget = null;
         this._searchTimeoutId = 0;
+        this._openPreferences = openPreferences;
 
         this._panel = new St.BoxLayout({
             vertical: true,
@@ -89,6 +91,28 @@ class PastazzoPanel extends St.Widget {
         });
         this._scrollView.set_child(this._list);
         this._scrollView.connect('scroll-event', (_actor, event) => this._smoothScrollShelf(event));
+
+        const settingsButtonContent = new St.BoxLayout({
+            vertical: true,
+            style_class: 'pastebar-tool-content',
+        });
+        settingsButtonContent.add_child(new St.Icon({
+            icon_name: 'preferences-system-symbolic',
+            style_class: 'pastebar-tool-icon',
+            icon_size: 20,
+        }));
+
+        this._settingsButton = new St.Button({
+            style_class: 'pastebar-tool-button pastebar-settings-button',
+            can_focus: true,
+            reactive: true,
+            track_hover: true,
+            x_align: Clutter.ActorAlign.CENTER,
+            y_align: Clutter.ActorAlign.CENTER,
+        });
+        this._settingsButton.set_child(settingsButtonContent);
+        this._settingsButton.connect('clicked', () => this._showPreferences());
+        this._taskbar.add_child(this._settingsButton);
 
         const clearButtonContent = new St.BoxLayout({
             vertical: true,
@@ -224,6 +248,17 @@ class PastazzoPanel extends St.Widget {
 
             this._render();
         });
+    }
+
+    _showPreferences() {
+        this._clearClickPending();
+        this.hidePanel();
+
+        try {
+            this._openPreferences?.();
+        } catch (error) {
+            logError(error, 'Pastazzo failed to open preferences');
+        }
     }
 
     _render() {
@@ -474,6 +509,7 @@ class PastazzoPanel extends St.Widget {
 
         this._header.set_size(contentWidth, TOOL_BUTTON_SIZE);
         this._taskbar.set_size(TOOLBAR_WIDTH, TOOL_BUTTON_SIZE);
+        this._settingsButton.set_size(TOOL_BUTTON_SIZE, TOOL_BUTTON_SIZE);
         this._clearButton.set_size(TOOL_BUTTON_SIZE, TOOL_BUTTON_SIZE);
         this._entry.set_width(searchWidth);
         this._scrollView.set_size(contentWidth, contentHeight - TOOL_BUTTON_SIZE - 10);
@@ -495,7 +531,7 @@ export default class PastazzoExtension extends Extension {
         this._lastText = null;
         this._lastImageKey = null;
         this._lastMimeKey = null;
-        this._panel = new PastazzoPanel();
+        this._panel = new PastazzoPanel(() => this.openPreferences());
         Main.uiGroup.add_child(this._panel);
 
         this._monitorsChangedId = Main.layoutManager.connect('monitors-changed', () => {

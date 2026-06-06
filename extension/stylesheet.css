@@ -58,6 +58,11 @@
   border-color: rgba(255, 132, 132, 0.42);
 }
 
+.pastebar-settings-button:hover {
+  background-color: rgba(79, 140, 255, 0.22);
+  border-color: rgba(122, 169, 255, 0.42);
+}
+
 .pastebar-tool-content {
   spacing: 0;
 }

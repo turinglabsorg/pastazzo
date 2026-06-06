@@ -109,7 +109,7 @@ body {
   border: 0;
   border-radius: 0;
   display: flex;
-  flex: 0 0 38px;
+  flex: 0 0 84px;
   flex-direction: row;
   gap: 8px;
   padding: 0;
@@ -141,12 +141,18 @@ body {
   border-color: rgba(255, 132, 132, 0.42);
 }
 
-.pastebar-tool-icon,
+.pastebar-settings-button:hover {
+  background: rgba(79, 140, 255, 0.22);
+  border-color: rgba(122, 169, 255, 0.42);
+}
+
+.pastebar-settings-icon,
+.pastebar-trash-icon,
 .pastebar-tool-label {
   color: inherit;
 }
 
-.pastebar-tool-icon {
+.pastebar-trash-icon {
   border: 2px solid currentColor;
   border-radius: 2px;
   display: block;
@@ -155,7 +161,7 @@ body {
   width: 14px;
 }
 
-.pastebar-tool-icon::before {
+.pastebar-trash-icon::before {
   background: currentColor;
   content: "";
   height: 2px;
@@ -165,7 +171,7 @@ body {
   width: 18px;
 }
 
-.pastebar-tool-icon::after {
+.pastebar-trash-icon::after {
   background: currentColor;
   content: "";
   height: 8px;
@@ -174,6 +180,38 @@ body {
   top: 3px;
   transform: rotate(45deg);
   width: 2px;
+}
+
+.pastebar-settings-icon {
+  border: 2px solid currentColor;
+  border-radius: 999px;
+  display: block;
+  height: 18px;
+  position: relative;
+  width: 18px;
+}
+
+.pastebar-settings-icon::before {
+  background: currentColor;
+  border-radius: 999px;
+  content: "";
+  height: 5px;
+  left: 5px;
+  position: absolute;
+  top: 5px;
+  width: 5px;
+}
+
+.pastebar-settings-icon::after {
+  background: currentColor;
+  content: "";
+  height: 24px;
+  left: 7px;
+  position: absolute;
+  top: -5px;
+  width: 2px;
+  box-shadow: 0 0 0 currentColor, -7px 7px 0 currentColor, 7px 7px 0 currentColor;
+  transform: rotate(45deg);
 }
 
 .pastebar-list {

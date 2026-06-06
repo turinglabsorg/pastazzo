@@ -71,10 +71,19 @@ try {
   assert.equal(taskbarStyles.backgroundColor, 'rgba(0, 0, 0, 0)', 'taskbar rail is visually transparent');
   assert.equal(taskbarStyles.borderWidth, '0px', 'taskbar rail has no visible border');
 
+  const settingsButtonBox = await page.locator('[data-testid="open-settings"]').boundingBox();
   const clearButtonBox = await page.locator('[data-testid="clear-history"]').boundingBox();
+  assert(settingsButtonBox, 'settings button has a bounding box');
   assert(clearButtonBox, 'clear button has a bounding box');
+  assert.equal(Math.round(settingsButtonBox.width), 38, 'settings button is fixed-width');
+  assert.equal(Math.round(settingsButtonBox.height), 38, 'settings button is square');
   assert.equal(Math.round(clearButtonBox.width), 38, 'clear button is fixed-width');
   assert.equal(Math.round(clearButtonBox.height), 38, 'clear button is square');
+  assert(settingsButtonBox.x < clearButtonBox.x, 'settings button sits to the left of the clear button');
+  assert(clearButtonBox.x > taskbarBox.x, 'clear button remains the rightmost toolbar action');
+  const settingsButtonRadius = await page.locator('[data-testid="open-settings"]')
+    .evaluate(element => getComputedStyle(element).borderRadius);
+  assert(settingsButtonRadius === '999px' || settingsButtonRadius === '50%', 'settings button is round');
   const clearButtonRadius = await page.locator('[data-testid="clear-history"]')
     .evaluate(element => getComputedStyle(element).borderRadius);
   assert(clearButtonRadius === '999px' || clearButtonRadius === '50%', 'clear button is round');
@@ -172,6 +181,12 @@ try {
   assert.equal(state.itemIds.length, 0, 'history is empty after clear');
   assert.equal(state.beepCount, 4, 'clear button emits feedback beep');
   assert.equal(state.isOpen, true, 'clear button keeps pastebar open');
+
+  await page.click('[data-testid="open-settings"]');
+  await page.waitForFunction(() => !window.pastebarHarness.state().isOpen);
+  state = await page.evaluate(() => window.pastebarHarness.state());
+  assert.equal(state.settingsOpenCount, 1, 'settings button opens preferences');
+  assert.equal(state.closeCount, 4, 'settings button closes pastebar');
 } finally {
   await browser.close();
   await new Promise(resolve => server.close(resolve));
