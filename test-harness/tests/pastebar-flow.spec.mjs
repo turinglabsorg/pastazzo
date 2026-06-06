@@ -187,6 +187,17 @@ try {
   state = await page.evaluate(() => window.pastebarHarness.state());
   assert.equal(state.settingsOpenCount, 1, 'settings button opens preferences');
   assert.equal(state.closeCount, 4, 'settings button closes pastebar');
+
+  await page.click('[data-testid="open"]');
+  await page.waitForSelector('[data-testid="overlay"].is-open');
+  await page.click('[data-testid="search"]');
+  state = await page.evaluate(() => window.pastebarHarness.state());
+  assert.equal(state.isOpen, true, 'clicking inside the shelf keeps pastebar open');
+
+  await page.mouse.click(640, 100);
+  await page.waitForFunction(() => !window.pastebarHarness.state().isOpen);
+  state = await page.evaluate(() => window.pastebarHarness.state());
+  assert.equal(state.closeCount, 5, 'clicking outside the shelf closes pastebar');
 } finally {
   await browser.close();
   await new Promise(resolve => server.close(resolve));

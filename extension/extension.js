@@ -43,6 +43,7 @@ class PastazzoPanel extends St.Widget {
         this._clickIndex = -1;
         this._scrollTarget = null;
         this._searchTimeoutId = 0;
+        this._stageCapturedEventId = 0;
         this._openPreferences = openPreferences;
 
         this._panel = new St.BoxLayout({
@@ -169,12 +170,6 @@ class PastazzoPanel extends St.Widget {
             return Clutter.EVENT_PROPAGATE;
         });
 
-        this.connect('button-press-event', (_actor, event) => {
-            if (event.get_source() === this)
-                this.hidePanel();
-
-            return Clutter.EVENT_PROPAGATE;
-        });
     }
 
     showPanel() {
@@ -192,6 +187,9 @@ class PastazzoPanel extends St.Widget {
         this._grab = Main.pushModal(this, {
             actionMode: Shell.ActionMode.POPUP,
         });
+        this._stageCapturedEventId = global.stage.connect('captured-event', (_actor, event) => {
+            return this._handleCapturedEvent(event);
+        });
         this._entry.grab_key_focus();
     }
 
@@ -205,6 +203,11 @@ class PastazzoPanel extends St.Widget {
         }
 
         this._clearClickPending();
+
+        if (this._stageCapturedEventId) {
+            global.stage.disconnect(this._stageCapturedEventId);
+            this._stageCapturedEventId = 0;
+        }
 
         if (this._grab) {
             Main.popModal(this._grab);
@@ -434,6 +437,29 @@ class PastazzoPanel extends St.Widget {
             playFeedback();
             this._render();
         });
+    }
+
+    _handleCapturedEvent(event) {
+        const type = event.type();
+        if (type !== Clutter.EventType.BUTTON_PRESS &&
+            type !== Clutter.EventType.TOUCH_BEGIN)
+            return Clutter.EVENT_PROPAGATE;
+
+        if (this._isEventInsidePanel(event))
+            return Clutter.EVENT_PROPAGATE;
+
+        this.hidePanel();
+        return Clutter.EVENT_STOP;
+    }
+
+    _isEventInsidePanel(event) {
+        const [stageX, stageY] = event.get_coords();
+        const [ok, panelX, panelY] = this._panel.transform_stage_point(stageX, stageY);
+        if (!ok)
+            return false;
+
+        const [width, height] = this._panel.get_size();
+        return panelX >= 0 && panelX <= width && panelY >= 0 && panelY <= height;
     }
 
     _smoothScrollShelf(event) {
