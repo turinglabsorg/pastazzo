@@ -1,0 +1,12 @@
+{
+  "name": "pastazzo-test-harness",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "screenshot": "node tests/screenshot.mjs",
+    "test": "node tests/pastebar-flow.spec.mjs"
+  },
+  "devDependencies": {
+    "playwright": "^1.56.0"
+  }
+}

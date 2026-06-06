@@ -1,0 +1,8 @@
+{
+  "uuid": "pastazzo@turinglabs.org",
+  "name": "Pastazzo",
+  "description": "Bottom clipboard search bar",
+  "shell-version": ["50"],
+  "settings-schema": "org.gnome.shell.extensions.pastazzo",
+  "version": 1
+}

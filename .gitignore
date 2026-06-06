@@ -1,0 +1,5 @@
+/target
+/test-harness/node_modules
+/test-harness/*-harness.png
+/extension/schemas/gschemas.compiled
+*.shell-extension.zip

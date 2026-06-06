@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<schemalist>
+  <schema id="org.gnome.shell.extensions.pastazzo" path="/org/gnome/shell/extensions/pastazzo/">
+    <key name="toggle-pastazzo" type="as">
+      <default>['&lt;Shift&gt;&lt;Alt&gt;v']</default>
+      <summary>Toggle Pastazzo</summary>
+      <description>Keyboard shortcut used to show or hide Pastazzo.</description>
+    </key>
+  </schema>
+</schemalist>

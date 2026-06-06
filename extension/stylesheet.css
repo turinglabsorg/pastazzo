@@ -1,0 +1,134 @@
+.pastebar-overlay {
+  background-color: rgba(0, 0, 0, 0.10);
+}
+
+.pastebar-panel {
+  background-color: rgba(24, 24, 27, 0.96);
+  border-top: 1px solid rgba(255, 255, 255, 0.12);
+  box-shadow: 0 -18px 60px rgba(0, 0, 0, 0.42);
+  padding: 14px;
+}
+
+.pastebar-content {
+  spacing: 8px;
+}
+
+.pastebar-main {
+  spacing: 10px;
+}
+
+.pastebar-search {
+  background-color: rgba(255, 255, 255, 0.10);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 10px;
+  color: #ffffff;
+  font-size: 14px;
+  min-height: 34px;
+  padding: 0 12px;
+  selection-background-color: #4f8cff;
+  selected-color: #ffffff;
+}
+
+.pastebar-scroll {
+  padding-top: 0;
+}
+
+.pastebar-taskbar {
+  background-color: rgba(255, 255, 255, 0.055);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 12px;
+  padding: 6px;
+  spacing: 8px;
+}
+
+.pastebar-tool-button {
+  background-color: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.10);
+  border-radius: 10px;
+  color: rgba(255, 255, 255, 0.78);
+  padding: 6px 4px;
+}
+
+.pastebar-tool-button:hover {
+  background-color: rgba(255, 255, 255, 0.14);
+  color: #ffffff;
+}
+
+.pastebar-clear-button:hover {
+  background-color: rgba(255, 78, 78, 0.22);
+  border-color: rgba(255, 132, 132, 0.42);
+}
+
+.pastebar-tool-content {
+  spacing: 3px;
+}
+
+.pastebar-tool-icon {
+  color: inherit;
+}
+
+.pastebar-tool-label {
+  color: inherit;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.pastebar-list {
+  spacing: 8px;
+}
+
+.pastebar-row {
+  background-color: rgba(255, 255, 255, 0.075);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 12px;
+  color: rgba(255, 255, 255, 0.78);
+  padding: 10px;
+  min-width: 160px;
+  min-height: 160px;
+}
+
+.pastebar-row:hover {
+  background-color: rgba(255, 255, 255, 0.12);
+}
+
+.pastebar-row-selected {
+  background-color: rgba(79, 140, 255, 0.28);
+  border-color: rgba(122, 169, 255, 0.46);
+  color: #ffffff;
+}
+
+.pastebar-card-content {
+  spacing: 6px;
+}
+
+.pastebar-card-title {
+  color: #ffffff;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.pastebar-row-label {
+  color: inherit;
+  font-size: 13px;
+}
+
+.pastebar-image-frame {
+  background-color: rgba(0, 0, 0, 0.22);
+  border-radius: 8px;
+  min-height: 104px;
+}
+
+.pastebar-image-preview {
+  border-radius: 8px;
+}
+
+.pastebar-card-meta {
+  color: rgba(255, 255, 255, 0.45);
+  font-size: 11px;
+}
+
+.pastebar-empty {
+  color: rgba(255, 255, 255, 0.45);
+  font-size: 14px;
+  padding: 22px 12px;
+}
