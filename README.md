@@ -19,6 +19,7 @@ Features:
 - Click once to copy an item back to the clipboard
 - Double-click to copy and paste into the focused app
 - Image previews for copied image files and image clipboard content
+- Preferences page for changing the open shortcut
 - Clear-history button in the search toolbar
 
 ## Install Or Update
@@ -45,6 +46,16 @@ gnome-extensions enable pastazzo@turinglabs.org
 gnome-extensions info pastazzo@turinglabs.org
 pastazzo search
 ```
+
+## Settings
+
+Open the settings page:
+
+```bash
+gnome-extensions prefs pastazzo@turinglabs.org
+```
+
+Use the `Open Pastazzo` row to record a new keyboard shortcut. Press `Escape` to cancel recording, `Backspace` or `Delete` to disable the shortcut, or the reset button to restore `Shift+Alt+V`.
 
 The history lives in:
 

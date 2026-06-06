@@ -1,0 +1,121 @@
+:root {
+  color-scheme: dark;
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  background: #111317;
+  color: #f5f7fb;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+}
+
+.settings-shell {
+  align-items: center;
+  display: flex;
+  min-height: 100vh;
+  justify-content: center;
+  padding: 28px;
+}
+
+.settings-window {
+  background: #24262b;
+  border: 1px solid #383b43;
+  border-radius: 12px;
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.45);
+  overflow: hidden;
+  width: min(680px, 92vw);
+}
+
+.settings-header {
+  align-items: center;
+  border-bottom: 1px solid #383b43;
+  display: flex;
+  min-height: 52px;
+  padding: 0 18px;
+}
+
+.settings-header h1 {
+  font-size: 16px;
+  font-weight: 700;
+  margin: 0;
+}
+
+.settings-group {
+  padding: 18px;
+}
+
+.settings-group h2 {
+  color: rgba(255, 255, 255, 0.62);
+  font-size: 13px;
+  font-weight: 700;
+  margin: 0 0 8px;
+}
+
+.settings-row {
+  align-items: center;
+  background: rgba(255, 255, 255, 0.055);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 10px;
+  display: flex;
+  gap: 18px;
+  justify-content: space-between;
+  min-height: 68px;
+  padding: 12px 14px;
+}
+
+.settings-title {
+  color: #ffffff;
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.settings-subtitle {
+  color: rgba(255, 255, 255, 0.58);
+  font-size: 13px;
+  margin-top: 3px;
+}
+
+.settings-actions {
+  align-items: center;
+  display: flex;
+  flex: 0 0 auto;
+  gap: 8px;
+}
+
+.shortcut-button {
+  background: rgba(255, 255, 255, 0.10);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 999px;
+  color: #ffffff;
+  font: inherit;
+  font-size: 13px;
+  min-width: 110px;
+  padding: 8px 12px;
+}
+
+.reset-button {
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.10);
+  border-radius: 999px;
+  height: 34px;
+  position: relative;
+  width: 34px;
+}
+
+.reset-button::before {
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 999px;
+  color: rgba(255, 255, 255, 0.72);
+  content: "";
+  height: 13px;
+  left: 9px;
+  position: absolute;
+  top: 9px;
+  width: 13px;
+}
