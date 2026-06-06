@@ -4,5 +4,5 @@
   "description": "Bottom clipboard search bar",
   "shell-version": ["50"],
   "settings-schema": "org.gnome.shell.extensions.pastazzo",
-  "version": 1
+  "version": 2
 }

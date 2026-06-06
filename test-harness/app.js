@@ -113,6 +113,7 @@
   const backend = new MockBackend();
   const overlay = document.querySelector('[data-testid="overlay"]');
   const search = document.querySelector('[data-testid="search"]');
+  const shelfScroll = document.querySelector('[data-testid="shelf-scroll"]');
   const shelf = document.querySelector('[data-testid="shelf"]');
   const clearButton = document.querySelector('[data-testid="clear-history"]');
   const openButton = document.querySelector('[data-testid="open"]');
@@ -229,6 +230,14 @@
   openButton.addEventListener('click', openPastebar);
   clearButton.addEventListener('click', clearHistory);
   search.addEventListener('input', render);
+  shelfScroll.addEventListener('wheel', event => {
+    event.preventDefault();
+    const delta = Math.abs(event.deltaX) > Math.abs(event.deltaY) ? event.deltaX : event.deltaY;
+    shelfScroll.scrollBy({
+      left: delta * 28,
+      behavior: 'smooth',
+    });
+  }, {passive: false});
   overlay.addEventListener('click', event => {
     if (event.target === overlay)
       closePastebar();

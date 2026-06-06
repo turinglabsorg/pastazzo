@@ -70,9 +70,36 @@ try {
   }));
   assert(scrollMetrics.scrollWidth > scrollMetrics.clientWidth, 'shelf scrolls horizontally when cards overflow');
 
+  const scrollBehavior = await page.locator('[data-testid="shelf-scroll"]')
+    .evaluate(element => getComputedStyle(element).scrollBehavior);
+  assert.equal(scrollBehavior, 'smooth', 'shelf uses smooth browser scrolling in the harness');
+
+  await page.$eval('[data-testid="shelf-scroll"]', element => {
+    element.scrollLeft = 0;
+    element.dispatchEvent(new WheelEvent('wheel', {
+      bubbles: true,
+      cancelable: true,
+      deltaY: 4,
+    }));
+  });
+  await page.waitForFunction(() => document.querySelector('[data-testid="shelf-scroll"]').scrollLeft > 0);
+
   const imageBackground = await page.locator('[data-card-id="image-hero"] [data-testid="image-preview"]')
     .evaluate(element => getComputedStyle(element).backgroundImage);
   assert(imageBackground.includes('data:image/svg+xml'), 'image card renders an inline preview, not a path string');
+
+  await page.fill('[data-testid="search"]', 'image/png');
+  await page.waitForFunction(() => document.querySelectorAll('[data-testid="card"]').length === 1);
+  const singleCardBox = await page.locator('[data-testid="card"]').first().boundingBox();
+  const singleScrollBox = await page.locator('[data-testid="shelf-scroll"]').boundingBox();
+  assert(singleCardBox, 'single result card has a bounding box');
+  assert(singleScrollBox, 'single result shelf has a bounding box');
+  assert.equal(Math.round(singleCardBox.width), 160, 'single result card keeps square width');
+  assert.equal(Math.round(singleCardBox.height), 160, 'single result card keeps square height');
+  assert(Math.abs(singleCardBox.x - singleScrollBox.x) < 2, 'single result card stays pinned to the left');
+
+  await page.fill('[data-testid="search"]', '');
+  await page.waitForFunction(() => document.querySelectorAll('[data-testid="card"]').length === 12);
 
   await page.locator('[data-card-id="cmd-build"]').click();
   await page.waitForFunction(() => !window.pastebarHarness.state().isOpen);

@@ -98,6 +98,7 @@ body {
   overflow-x: auto;
   overflow-y: hidden;
   padding-bottom: 8px;
+  scroll-behavior: smooth;
   width: 100%;
 }
 
@@ -106,7 +107,7 @@ body {
   border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 12px;
   display: flex;
-  flex: 0 0 76px;
+  flex: 0 0 56px;
   flex-direction: column;
   gap: 8px;
   padding: 6px;
@@ -122,7 +123,7 @@ body {
   display: flex;
   flex-direction: column;
   gap: 3px;
-  height: 54px;
+  height: 42px;
   justify-content: center;
   padding: 6px 4px;
 }
@@ -140,8 +141,36 @@ body {
 .pastebar-tool-icon,
 .pastebar-tool-label {
   color: inherit;
-  font-size: 11px;
-  font-weight: 700;
+}
+
+.pastebar-tool-icon {
+  border: 2px solid currentColor;
+  border-radius: 2px;
+  display: block;
+  height: 16px;
+  position: relative;
+  width: 14px;
+}
+
+.pastebar-tool-icon::before {
+  background: currentColor;
+  content: "";
+  height: 2px;
+  left: -2px;
+  position: absolute;
+  top: -5px;
+  width: 18px;
+}
+
+.pastebar-tool-icon::after {
+  background: currentColor;
+  content: "";
+  height: 8px;
+  left: 5px;
+  position: absolute;
+  top: 3px;
+  transform: rotate(45deg);
+  width: 2px;
 }
 
 .pastebar-list {

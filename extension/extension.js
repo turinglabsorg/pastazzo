@@ -17,8 +17,9 @@ const BAR_HEIGHT = 252;
 const BAR_PADDING = 14;
 const CARD_GAP = 8;
 const CARD_SIZE = 160;
-const TASKBAR_WIDTH = 76;
+const TASKBAR_WIDTH = 56;
 const DOUBLE_CLICK_DELAY_MS = 220;
+const SCROLL_ANIMATION_MS = 160;
 const IMAGE_MIMES = ['image/png', 'image/jpeg', 'image/jpg', 'image/webp', 'image/gif', 'image/bmp', 'image/tiff'];
 const FEEDBACK_SOUND = '/usr/share/sounds/Yaru/stereo/message.oga';
 
@@ -38,6 +39,7 @@ class PastazzoPanel extends St.Widget {
         this._grab = null;
         this._clickTimeoutId = 0;
         this._clickIndex = -1;
+        this._scrollTarget = null;
         this._searchTimeoutId = 0;
 
         this._panel = new St.BoxLayout({
@@ -93,19 +95,16 @@ class PastazzoPanel extends St.Widget {
             x_expand: true,
         });
         this._scrollView.set_child(this._list);
+        this._scrollView.connect('scroll-event', (_actor, event) => this._smoothScrollShelf(event));
 
         const clearButtonContent = new St.BoxLayout({
             vertical: true,
             style_class: 'pastebar-tool-content',
         });
         clearButtonContent.add_child(new St.Icon({
-            icon_name: 'edit-clear-symbolic',
+            icon_name: 'user-trash-symbolic',
             style_class: 'pastebar-tool-icon',
-            icon_size: 18,
-        }));
-        clearButtonContent.add_child(new St.Label({
-            style_class: 'pastebar-tool-label',
-            text: 'Clear',
+            icon_size: 20,
         }));
 
         this._clearButton = new St.Button({
@@ -252,7 +251,6 @@ class PastazzoPanel extends St.Widget {
                     : 'pastebar-row',
                 can_focus: true,
                 reactive: true,
-                x_expand: true,
                 track_hover: true,
             });
             row.set_size(CARD_SIZE, CARD_SIZE);
@@ -408,6 +406,57 @@ class PastazzoPanel extends St.Widget {
         });
     }
 
+    _smoothScrollShelf(event) {
+        if (event.is_pointer_emulated?.())
+            return Clutter.EVENT_STOP;
+
+        const adjustment = this._scrollView.hadjustment ??
+            this._scrollView.get_hadjustment?.() ??
+            this._scrollView.get_hscroll_bar().get_adjustment();
+        if (!adjustment)
+            return Clutter.EVENT_PROPAGATE;
+
+        let delta = 0;
+        switch (event.get_scroll_direction()) {
+        case Clutter.ScrollDirection.UP:
+        case Clutter.ScrollDirection.LEFT:
+            delta = -1;
+            break;
+        case Clutter.ScrollDirection.DOWN:
+        case Clutter.ScrollDirection.RIGHT:
+            delta = 1;
+            break;
+        case Clutter.ScrollDirection.SMOOTH: {
+            const [dx, dy] = event.get_scroll_delta();
+            delta = Math.abs(dx) > Math.abs(dy) ? dx : dy;
+            break;
+        }
+        default:
+            return Clutter.EVENT_PROPAGATE;
+        }
+
+        if (!delta)
+            return Clutter.EVENT_STOP;
+
+        const [value, lower, upper, stepIncrement, _pageIncrement, pageSize] = adjustment.get_values();
+        const max = Math.max(lower, upper - pageSize);
+        const increment = Math.max(stepIncrement || 0, CARD_SIZE * 0.75);
+        const base = this._scrollTarget ?? value;
+        const target = Math.max(lower, Math.min(max, base + delta * increment));
+
+        this._scrollTarget = target;
+        adjustment.ease(target, {
+            progress_mode: Clutter.AnimationMode.EASE_OUT_QUAD,
+            duration: SCROLL_ANIMATION_MS,
+            onComplete: () => {
+                if (this._scrollTarget === target)
+                    this._scrollTarget = null;
+            },
+        });
+
+        return Clutter.EVENT_STOP;
+    }
+
     _relayout() {
         const monitor = Main.layoutManager.primaryMonitor;
         if (!monitor)
@@ -431,10 +480,13 @@ class PastazzoPanel extends St.Widget {
         this._content.set_size(contentWidth, contentHeight);
         this._mainColumn.set_size(mainWidth, contentHeight);
         this._taskbar.set_size(TASKBAR_WIDTH, contentHeight);
-        this._clearButton.set_size(TASKBAR_WIDTH, 54);
+        this._clearButton.set_size(42, 42);
         this._entry.set_width(mainWidth);
         this._scrollView.set_size(mainWidth, CARD_SIZE + 22);
-        this._list.set_height(CARD_SIZE);
+        const listWidth = this._items.length
+            ? this._items.length * CARD_SIZE + Math.max(0, this._items.length - 1) * CARD_GAP
+            : CARD_SIZE;
+        this._list.set_size(listWidth, CARD_SIZE);
     }
 
     _cardWidth() {
