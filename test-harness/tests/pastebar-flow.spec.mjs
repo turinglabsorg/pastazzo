@@ -47,14 +47,20 @@ try {
   await page.click('[data-testid="open"]');
   await page.waitForSelector('[data-testid="overlay"].is-open');
 
+  const headerBox = await page.locator('[data-testid="header"]').boundingBox();
   const searchBox = await page.locator('[data-testid="search"]').boundingBox();
   const taskbarBox = await page.locator('[data-testid="taskbar"]').boundingBox();
   const scrollBox = await page.locator('[data-testid="shelf-scroll"]').boundingBox();
+  assert(headerBox, 'header has a bounding box');
   assert(searchBox, 'search input has a bounding box');
   assert(taskbarBox, 'right taskbar has a bounding box');
   assert(scrollBox, 'shelf scroll has a bounding box');
   assert.equal(Math.round(searchBox.height), 34, 'search input is compact');
-  assert(taskbarBox.x > scrollBox.x + scrollBox.width, 'taskbar is positioned to the right of the shelf');
+  assert(taskbarBox.x > searchBox.x + searchBox.width, 'taskbar is positioned to the right of the search input');
+  assert(Math.abs(taskbarBox.y - headerBox.y) < 2, 'taskbar is in the search header row');
+  assert(scrollBox.y > headerBox.y + headerBox.height, 'shelf sits below the search header');
+  assert(Math.abs(scrollBox.x - headerBox.x) < 2, 'shelf starts at the same left edge as the header');
+  assert(scrollBox.width > searchBox.width, 'shelf keeps full width instead of losing space to the toolbar');
   const taskbarStyles = await page.locator('[data-testid="taskbar"]').evaluate(element => {
     const style = getComputedStyle(element);
     return {

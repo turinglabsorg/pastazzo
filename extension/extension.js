@@ -17,7 +17,8 @@ const BAR_HEIGHT = 252;
 const BAR_PADDING = 14;
 const CARD_GAP = 8;
 const CARD_SIZE = 160;
-const TASKBAR_WIDTH = 50;
+const TOOLBAR_WIDTH = 38;
+const TOOL_BUTTON_SIZE = 38;
 const DOUBLE_CLICK_DELAY_MS = 220;
 const SCROLL_ANIMATION_MS = 160;
 const IMAGE_MIMES = ['image/png', 'image/jpeg', 'image/jpg', 'image/webp', 'image/gif', 'image/bmp', 'image/tiff'];
@@ -49,27 +50,18 @@ class PastazzoPanel extends St.Widget {
         });
         this.add_child(this._panel);
 
-        this._content = new St.BoxLayout({
+        this._header = new St.BoxLayout({
             vertical: false,
-            style_class: 'pastebar-content',
+            style_class: 'pastebar-header',
             x_expand: true,
-            y_expand: true,
         });
-        this._panel.add_child(this._content);
-
-        this._mainColumn = new St.BoxLayout({
-            vertical: true,
-            style_class: 'pastebar-main',
-            x_expand: true,
-            y_expand: true,
-        });
-        this._content.add_child(this._mainColumn);
+        this._panel.add_child(this._header);
 
         this._taskbar = new St.BoxLayout({
-            vertical: true,
+            vertical: false,
             style_class: 'pastebar-taskbar',
-            x_align: Clutter.ActorAlign.CENTER,
-            y_expand: true,
+            x_align: Clutter.ActorAlign.END,
+            y_align: Clutter.ActorAlign.CENTER,
         });
 
         this._entry = new St.Entry({
@@ -78,7 +70,7 @@ class PastazzoPanel extends St.Widget {
             hint_text: 'Search clipboard',
             track_hover: true,
         });
-        this._mainColumn.add_child(this._entry);
+        this._header.add_child(this._entry);
 
         this._scrollView = new St.ScrollView({
             style_class: 'pastebar-scroll',
@@ -88,7 +80,7 @@ class PastazzoPanel extends St.Widget {
             overlay_scrollbars: true,
             enable_mouse_scrolling: true,
         });
-        this._mainColumn.add_child(this._scrollView);
+        this._panel.add_child(this._scrollView);
 
         this._list = new St.BoxLayout({
             vertical: false,
@@ -114,13 +106,13 @@ class PastazzoPanel extends St.Widget {
             reactive: true,
             track_hover: true,
             x_align: Clutter.ActorAlign.CENTER,
-            y_align: Clutter.ActorAlign.START,
+            y_align: Clutter.ActorAlign.CENTER,
         });
         this._clearButton.set_child(clearButtonContent);
         this._clearButton.connect('clicked', () => this._clearHistory());
         this._taskbar.add_child(this._clearButton);
 
-        this._content.add_child(this._taskbar);
+        this._header.add_child(this._taskbar);
 
         this._entry.clutter_text.connect('text-changed', () => {
             this._selected = 0;
@@ -478,14 +470,13 @@ class PastazzoPanel extends St.Widget {
 
         const contentWidth = width - BAR_PADDING * 2;
         const contentHeight = height - BAR_PADDING * 2;
-        const mainWidth = contentWidth - TASKBAR_WIDTH - CARD_GAP;
+        const searchWidth = contentWidth - TOOLBAR_WIDTH - CARD_GAP;
 
-        this._content.set_size(contentWidth, contentHeight);
-        this._mainColumn.set_size(mainWidth, contentHeight);
-        this._taskbar.set_size(TASKBAR_WIDTH, contentHeight);
-        this._clearButton.set_size(38, 38);
-        this._entry.set_width(mainWidth);
-        this._scrollView.set_size(mainWidth, CARD_SIZE + 22);
+        this._header.set_size(contentWidth, TOOL_BUTTON_SIZE);
+        this._taskbar.set_size(TOOLBAR_WIDTH, TOOL_BUTTON_SIZE);
+        this._clearButton.set_size(TOOL_BUTTON_SIZE, TOOL_BUTTON_SIZE);
+        this._entry.set_width(searchWidth);
+        this._scrollView.set_size(contentWidth, contentHeight - TOOL_BUTTON_SIZE - 10);
         const listWidth = this._items.length
             ? this._items.length * CARD_SIZE + Math.max(0, this._items.length - 1) * CARD_GAP
             : CARD_SIZE;

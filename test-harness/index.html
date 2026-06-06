@@ -14,18 +14,16 @@
 
     <section class="pastebar-overlay" data-testid="overlay" aria-hidden="true">
       <div class="pastebar-panel" role="dialog" aria-label="Clipboard history">
-        <div class="pastebar-content">
-          <div class="pastebar-main">
-            <input class="pastebar-search" data-testid="search" placeholder="Search clipboard" autocomplete="off">
-            <div class="pastebar-scroll" data-testid="shelf-scroll">
-              <div class="pastebar-list" data-testid="shelf"></div>
-            </div>
-          </div>
+        <div class="pastebar-header" data-testid="header">
+          <input class="pastebar-search" data-testid="search" placeholder="Search clipboard" autocomplete="off">
           <aside class="pastebar-taskbar" data-testid="taskbar">
             <button class="pastebar-tool-button pastebar-clear-button" data-testid="clear-history" type="button">
               <span class="pastebar-tool-icon" aria-hidden="true"></span>
             </button>
           </aside>
+        </div>
+        <div class="pastebar-scroll" data-testid="shelf-scroll">
+          <div class="pastebar-list" data-testid="shelf"></div>
         </div>
       </div>
     </section>
