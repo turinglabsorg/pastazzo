@@ -1,6 +1,16 @@
 # Pastazzo
 
+```text
+ ____   _    ____ _____  _    __________ ___
+|  _ \ / \  / ___|_   _|/ \  |__  /__  / _ \
+| |_) / _ \ \___ \ | | / _ \   / /  / / | | |
+|  __/ ___ \ ___) || |/ ___ \ / /_ / /| |_| |
+|_| /_/   \_\____/ |_/_/   \_/____/____\___/
+```
+
 Pastazzo is a GNOME Wayland clipboard shelf inspired by Paste. It combines a small Rust history store with a GNOME Shell extension.
+
+![Pastazzo clipboard shelf preview](assets/pastazzo-preview.png)
 
 Features:
 
@@ -9,7 +19,7 @@ Features:
 - Click once to copy an item back to the clipboard
 - Double-click to copy and paste into the focused app
 - Image previews for copied image files and image clipboard content
-- Clear-history button in the right taskbar
+- Clear-history button in the search toolbar
 
 ## Install Or Update
 
