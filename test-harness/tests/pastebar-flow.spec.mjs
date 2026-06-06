@@ -56,6 +56,14 @@ try {
   assert.equal(Math.round(searchBox.height), 34, 'search input is compact');
   assert(taskbarBox.x > scrollBox.x + scrollBox.width, 'taskbar is positioned to the right of the shelf');
 
+  const clearButtonBox = await page.locator('[data-testid="clear-history"]').boundingBox();
+  assert(clearButtonBox, 'clear button has a bounding box');
+  assert.equal(Math.round(clearButtonBox.width), 38, 'clear button is fixed-width');
+  assert.equal(Math.round(clearButtonBox.height), 38, 'clear button is square');
+  const clearButtonRadius = await page.locator('[data-testid="clear-history"]')
+    .evaluate(element => getComputedStyle(element).borderRadius);
+  assert(clearButtonRadius === '999px' || clearButtonRadius === '50%', 'clear button is round');
+
   const cardCount = await page.locator('[data-testid="card"]').count();
   assert.equal(cardCount, 12, 'renders full mock history');
 
@@ -73,6 +81,9 @@ try {
   const scrollBehavior = await page.locator('[data-testid="shelf-scroll"]')
     .evaluate(element => getComputedStyle(element).scrollBehavior);
   assert.equal(scrollBehavior, 'smooth', 'shelf uses smooth browser scrolling in the harness');
+  const scrollbarWidth = await page.locator('[data-testid="shelf-scroll"]')
+    .evaluate(element => getComputedStyle(element).scrollbarWidth);
+  assert.equal(scrollbarWidth, 'none', 'native scrollbar is hidden');
 
   await page.$eval('[data-testid="shelf-scroll"]', element => {
     element.scrollLeft = 0;

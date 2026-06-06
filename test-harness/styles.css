@@ -99,7 +99,12 @@ body {
   overflow-y: hidden;
   padding-bottom: 8px;
   scroll-behavior: smooth;
+  scrollbar-width: none;
   width: 100%;
+}
+
+.pastebar-scroll::-webkit-scrollbar {
+  display: none;
 }
 
 .pastebar-taskbar {
@@ -107,7 +112,7 @@ body {
   border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 12px;
   display: flex;
-  flex: 0 0 56px;
+  flex: 0 0 50px;
   flex-direction: column;
   gap: 8px;
   padding: 6px;
@@ -117,15 +122,16 @@ body {
   align-items: center;
   background: rgba(255, 255, 255, 0.08);
   border: 1px solid rgba(255, 255, 255, 0.10);
-  border-radius: 10px;
+  border-radius: 999px;
   color: rgba(255, 255, 255, 0.78);
   cursor: pointer;
   display: flex;
   flex-direction: column;
   gap: 3px;
-  height: 42px;
+  height: 38px;
   justify-content: center;
-  padding: 6px 4px;
+  padding: 0;
+  width: 38px;
 }
 
 .pastebar-tool-button:hover {

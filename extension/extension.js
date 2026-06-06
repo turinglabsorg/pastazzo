@@ -17,7 +17,7 @@ const BAR_HEIGHT = 252;
 const BAR_PADDING = 14;
 const CARD_GAP = 8;
 const CARD_SIZE = 160;
-const TASKBAR_WIDTH = 56;
+const TASKBAR_WIDTH = 50;
 const DOUBLE_CLICK_DELAY_MS = 220;
 const SCROLL_ANIMATION_MS = 160;
 const IMAGE_MIMES = ['image/png', 'image/jpeg', 'image/jpg', 'image/webp', 'image/gif', 'image/bmp', 'image/tiff'];
@@ -68,6 +68,7 @@ class PastazzoPanel extends St.Widget {
         this._taskbar = new St.BoxLayout({
             vertical: true,
             style_class: 'pastebar-taskbar',
+            x_align: Clutter.ActorAlign.CENTER,
             y_expand: true,
         });
 
@@ -82,7 +83,7 @@ class PastazzoPanel extends St.Widget {
         this._scrollView = new St.ScrollView({
             style_class: 'pastebar-scroll',
             x_expand: true,
-            hscrollbar_policy: St.PolicyType.AUTOMATIC,
+            hscrollbar_policy: St.PolicyType.NEVER,
             vscrollbar_policy: St.PolicyType.NEVER,
             overlay_scrollbars: true,
             enable_mouse_scrolling: true,
@@ -112,6 +113,8 @@ class PastazzoPanel extends St.Widget {
             can_focus: true,
             reactive: true,
             track_hover: true,
+            x_align: Clutter.ActorAlign.CENTER,
+            y_align: Clutter.ActorAlign.START,
         });
         this._clearButton.set_child(clearButtonContent);
         this._clearButton.connect('clicked', () => this._clearHistory());
@@ -480,7 +483,7 @@ class PastazzoPanel extends St.Widget {
         this._content.set_size(contentWidth, contentHeight);
         this._mainColumn.set_size(mainWidth, contentHeight);
         this._taskbar.set_size(TASKBAR_WIDTH, contentHeight);
-        this._clearButton.set_size(42, 42);
+        this._clearButton.set_size(38, 38);
         this._entry.set_width(mainWidth);
         this._scrollView.set_size(mainWidth, CARD_SIZE + 22);
         const listWidth = this._items.length
