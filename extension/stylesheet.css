@@ -34,10 +34,10 @@
 }
 
 .pastebar-taskbar {
-  background-color: rgba(255, 255, 255, 0.040);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 12px;
-  padding: 6px;
+  background-color: transparent;
+  border: 0;
+  border-radius: 0;
+  padding: 0;
   spacing: 8px;
 }
 

@@ -55,6 +55,15 @@ try {
   assert(scrollBox, 'shelf scroll has a bounding box');
   assert.equal(Math.round(searchBox.height), 34, 'search input is compact');
   assert(taskbarBox.x > scrollBox.x + scrollBox.width, 'taskbar is positioned to the right of the shelf');
+  const taskbarStyles = await page.locator('[data-testid="taskbar"]').evaluate(element => {
+    const style = getComputedStyle(element);
+    return {
+      backgroundColor: style.backgroundColor,
+      borderWidth: style.borderTopWidth,
+    };
+  });
+  assert.equal(taskbarStyles.backgroundColor, 'rgba(0, 0, 0, 0)', 'taskbar rail is visually transparent');
+  assert.equal(taskbarStyles.borderWidth, '0px', 'taskbar rail has no visible border');
 
   const clearButtonBox = await page.locator('[data-testid="clear-history"]').boundingBox();
   assert(clearButtonBox, 'clear button has a bounding box');
