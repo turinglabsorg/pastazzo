@@ -525,8 +525,8 @@ class PastazzoPanel extends St.Widget {
         const height = BAR_HEIGHT;
         this._panel.set_size(width, height);
         this._panel.set_position(
-            monitor.x,
-            Math.floor(monitor.y + monitor.height - height)
+            0,
+            Math.floor(monitor.height - height)
         );
 
         const contentWidth = width - BAR_PADDING * 2;
