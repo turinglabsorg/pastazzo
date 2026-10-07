@@ -203,21 +203,22 @@ pastazzo://join?v=1&server=<url>&fp=<fingerprint>&id=<invite id>&key=<invite sec
 
 ## HTTP API
 
-Draft, finalized with the server (M2). JSON bodies unless noted; endpoints marked *signed* need a [signed request](#signed-requests).
+JSON bodies unless noted. Endpoints marked *signed* need a [signed request](#signed-requests), sent in the headers `pastazzo-device`, `pastazzo-timestamp` (decimal milliseconds), `pastazzo-nonce` and `pastazzo-signature`; the signed path is the request's path and query exactly as sent. Errors are `{"error": "..."}` with a 4xx or 5xx status.
 
 | Endpoint | Purpose |
 | --- | --- |
-| `GET /v1/server` | Server identity and registration mode |
+| `GET /v1/server` | Protocol version, server identity, registration mode |
 | `POST /v1/register/start` | Registration steps 2–3 |
 | `POST /v1/register/finish` | Registration steps 4–5 |
 | `POST /v1/login/start` | Login steps 1–2 |
 | `POST /v1/login/finish` | Login steps 3–4 |
 | `PUT /v1/devices/{id}` | *Signed.* Publish this device's record (binary body) |
-| `GET /v1/devices` | *Signed.* All device records |
-| `DELETE /v1/devices/{id}` | *Signed.* Revoke a device |
-| `POST /v1/items` | *Signed.* Upload a sealed item (binary body) |
-| `GET /v1/items?after=<cursor>` | *Signed.* Items since a cursor, for catching up |
-| `GET /v1/stream` | *Signed.* WebSocket: new items as they arrive |
+| `GET /v1/devices` | *Signed.* The account's device records |
+| `DELETE /v1/devices/{id}` | *Signed.* Revoke a device of the account |
+| `POST /v1/items` | *Signed.* Upload a sealed item (binary body); answers with its cursor |
+| `GET /v1/items?after=<cursor>&wait=<seconds>` | *Signed.* Items after a cursor, oldest first. With none yet, the server holds the request up to `wait` seconds (at most 30) and answers as soon as one arrives. `after=latest` returns only the current cursor, for a device that only wants what comes next. |
+
+Receiving is long polling rather than WebSockets so it works through any proxy or tunnel.
 
 ## Not yet specified
 

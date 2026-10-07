@@ -74,6 +74,21 @@ In progress ([#1](https://github.com/turinglabsorg/pastazzo/issues/1)): copy on 
 
 Without an account, pastazzo keeps working as it does today, local only.
 
+Run a server (it creates its keys on first start, in `~/.local/share/pastazzo-server`), behind any reverse proxy or tunnel:
+
+```bash
+pastazzo-server serve --listen 127.0.0.1:4320
+pastazzo-server invite --url https://clip.example.org
+```
+
+On the first device, with the invite link:
+
+```bash
+pastazzo-sync join 'pastazzo://join?...' --username you
+```
+
+It prints the command to log in on the other devices. Then keep `pastazzo-sync run` running: the repository's `systemd` and `launchd` examples are in the issue for now. On GNOME, items from other devices go on the clipboard through the extension, so log out and back in after updating it.
+
 ## Development
 
 The repository is a Cargo workspace:
