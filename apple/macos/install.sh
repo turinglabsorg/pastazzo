@@ -38,11 +38,13 @@ sign --identifier org.pastazzo.sync "$BIN/pastazzo-sync"
 echo "building Pastazzo.app"
 BUILD="$MACOS/build/Pastazzo.app"
 rm -rf "$BUILD"
-mkdir -p "$BUILD/Contents/MacOS"
+mkdir -p "$BUILD/Contents/MacOS" "$BUILD/Contents/Resources"
 # swiftc directly: SwiftPM can't load manifests with some Command Line Tools.
 swiftc -O -target "$(uname -m)-apple-macos12.0" -sdk "$(xcrun --show-sdk-path)" -framework Carbon \
     -o "$BUILD/Contents/MacOS/Pastazzo" "$MACOS"/Sources/Pastazzo/*.swift
 cp "$MACOS/Info.plist" "$BUILD/Contents/Info.plist"
+# Icons come from the SVGs in assets/icon, rendered by scripts/icons.py.
+cp "$MACOS/AppIcon.icns" "$MACOS/MenuBarIcon.png" "$MACOS/MenuBarIcon@2x.png" "$BUILD/Contents/Resources/"
 sign "$BUILD"
 
 # Stop what's running before replacing it.

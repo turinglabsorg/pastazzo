@@ -703,7 +703,7 @@ export default class PastazzoExtension extends Extension {
             this._indicator = new PanelMenu.Button(0.0, 'Pastazzo sync', true);
             const box = new St.BoxLayout({style_class: 'panel-status-menu-box'});
             box.add_child(new St.Icon({
-                icon_name: 'edit-paste-symbolic',
+                gicon: Gio.icon_new_for_string(`${this.path}/icons/pastazzo-symbolic.svg`),
                 style_class: 'system-status-icon',
             }));
             this._indicatorLabel = new St.Label({

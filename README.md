@@ -1,3 +1,5 @@
+<p align="center"><img src="assets/icon/pastazzo.png" width="128" height="128" alt=""></p>
+
 # Pastazzo
 
 ```text

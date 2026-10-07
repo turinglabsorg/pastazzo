@@ -54,7 +54,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// A click opens the shelf; a right-click (or Control-click) shows the menu.
     private func makeStatusItem() -> NSStatusItem {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        item.button?.image = NSImage(systemSymbolName: "doc.on.clipboard", accessibilityDescription: "Pastazzo")
+        let icon = Bundle.main.image(forResource: "MenuBarIcon")
+            ?? NSImage(systemSymbolName: "doc.on.clipboard", accessibilityDescription: nil)
+        // A template image takes the menu bar's colour, light or dark.
+        icon?.isTemplate = true
+        icon?.accessibilityDescription = "Pastazzo"
+        item.button?.image = icon
         item.button?.imagePosition = .imageLeft
         item.button?.target = self
         item.button?.action = #selector(statusItemClicked)
