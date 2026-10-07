@@ -12,6 +12,7 @@ use pastazzo_server::store::Store;
 use pastazzo_sync::clipboard::Clipboard;
 use pastazzo_sync::daemon::Daemon;
 use pastazzo_sync::remote::Remote;
+use pastazzo_sync::secrets::NoKeychain;
 use pastazzo_sync::state::State;
 use pastazzo_sync::{Result, account};
 use rand::rngs::OsRng;
@@ -120,7 +121,7 @@ fn device(state: State, path: &Path, echo: bool) -> (Daemon, FakeClipboard) {
     };
     (
         Daemon::new(
-            State::load(path).unwrap(),
+            State::load_with(path, &NoKeychain).unwrap(),
             path,
             Box::new(clipboard.clone()),
         ),
@@ -186,7 +187,7 @@ fn two_devices_sync_both_ways() {
     // The cursor survives a restart: nothing is applied twice.
     let restarted_clipboard = FakeClipboard::default();
     let restarted = Daemon::new(
-        State::load(&mac_path).unwrap(),
+        State::load_with(&mac_path, &NoKeychain).unwrap(),
         &mac_path,
         Box::new(restarted_clipboard.clone()),
     );
@@ -301,7 +302,7 @@ fn clearing_everywhere_empties_the_server_and_reaches_the_other_devices() {
     laptop
         .send(&Content::Text("something private".into()))
         .unwrap();
-    let state = State::load(&laptop_path).unwrap();
+    let state = State::load_with(&laptop_path, &NoKeychain).unwrap();
     let remote = Remote::new(&url);
     remote.delete_items(&state).unwrap();
     assert!(remote.items(&state, 0, 0).unwrap().items.is_empty());
@@ -349,7 +350,7 @@ fn devices_dont_download_their_own_items() {
     laptop_daemon.send(&Content::Text("mine".into())).unwrap();
 
     let remote = Remote::new(&url);
-    let laptop = State::load(&laptop_path).unwrap();
+    let laptop = State::load_with(&laptop_path, &NoKeychain).unwrap();
     let own = remote.items(&laptop, 0, 0).unwrap();
     assert!(own.items.is_empty());
     assert!(own.cursor > 0, "the cursor still moves past them");

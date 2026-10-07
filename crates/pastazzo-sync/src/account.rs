@@ -147,6 +147,8 @@ pub fn login(
         device,
         device_name: device_name.to_owned(),
         cursor: 0,
+        // Where the keys go is decided when the state is first saved.
+        storage: crate::state::KeyStorage::File,
     };
     let record = SealedDeviceRecord::seal(
         &state.account_key,

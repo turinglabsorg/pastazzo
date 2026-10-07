@@ -155,8 +155,8 @@ fn run() -> Result<()> {
                     "use a password of at least {MIN_PASSWORD_CHARS} characters: it's the only thing protecting your account from the server"
                 ));
             }
-            let state = account::join(link, username, &password, &args.device_name())?;
-            state.save(&path)?;
+            let mut state = account::join(link, username, &password, &args.device_name())?;
+            state.save_new(&path)?;
             println!("account {username} created, this device is logged in");
             print_login_command(&state);
             Ok(())
@@ -172,14 +172,14 @@ fn run() -> Result<()> {
                 .and_then(|f| f.try_into().ok())
                 .ok_or("--fingerprint isn't a valid fingerprint")?;
             let password = args.password(false)?;
-            let state = account::login(
+            let mut state = account::login(
                 args.required("server")?,
                 &fingerprint,
                 args.required("username")?,
                 &password,
                 &args.device_name(),
             )?;
-            state.save(&path)?;
+            state.save_new(&path)?;
             println!("logged in as {} on {}", state.username, state.server_url);
             Ok(())
         }
@@ -222,6 +222,14 @@ fn run() -> Result<()> {
                 "this device: {}",
                 display_fingerprint(&state.device.public().fingerprint())
             );
+            match state.storage {
+                pastazzo_sync::state::KeyStorage::Keychain => {
+                    println!("keys:        in the system keychain")
+                }
+                pastazzo_sync::state::KeyStorage::File => {
+                    println!("keys:        in {} (no keychain)", path.display())
+                }
+            }
             print_login_command(&state);
             Ok(())
         }
@@ -269,7 +277,7 @@ fn run() -> Result<()> {
         "logout" => {
             let state = State::load(&path)?;
             let revoked = Remote::new(&state.server_url).revoke_device(&state, &state.device.id());
-            std::fs::remove_file(&path).map_err(|e| format!("remove {}: {e}", path.display()))?;
+            state.forget(&path)?;
             match revoked {
                 Ok(()) => println!("logged out, and this device was revoked on the server"),
                 Err(error) => {
@@ -336,6 +344,7 @@ fn status_json(path: &std::path::Path) -> String {
         "server_fingerprint": display_fingerprint(&state.identity.fingerprint()),
         "account_key_fingerprint": display_fingerprint(&state.account_key.fingerprint()),
         "key_epoch": state.account_key.epoch(),
+        "key_storage": state.storage,
         "this_device": {
             "id": B64::encode(&state.device.id()),
             "name": state.device_name,

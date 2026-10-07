@@ -6,6 +6,7 @@ pub mod account;
 pub mod clipboard;
 pub mod daemon;
 pub mod remote;
+pub mod secrets;
 pub mod state;
 
 use std::time::{SystemTime, UNIX_EPOCH};

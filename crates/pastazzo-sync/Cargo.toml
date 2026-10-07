@@ -10,6 +10,7 @@ description = "pastazzo sync client: end-to-end encrypted clipboard sync with a 
 pastazzo-core = { path = "../pastazzo-core" }
 base64 = "0.22"
 rand = "0.8"
+keyring = "4"
 rpassword = "7"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
