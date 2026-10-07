@@ -50,6 +50,13 @@ const MAX_TRANSFERS_PER_ACCOUNT: usize = 8;
 /// How often upload progress is passed on to the other devices.
 const PROGRESS_INTERVAL_MS: u64 = 200;
 const MAX_ATTEMPTS: usize = 20;
+/// Registration and login attempts allowed in all, in [`ATTEMPT_WINDOW_MS`].
+/// The relay in front of a server may hide clients' addresses, so this is the
+/// limit that keeps a flood of made-up usernames from filling memory: every
+/// started registration or login is an attempt.
+const MAX_ATTEMPTS_OVERALL: usize = 600;
+/// Bodies of the JSON endpoints are small; only items are big.
+const MAX_JSON_BYTES: usize = 64 * 1024;
 const ATTEMPT_WINDOW_MS: u64 = 10 * 60 * 1000;
 
 pub struct App {
@@ -61,9 +68,15 @@ pub struct App {
     registrations: Mutex<HashMap<Id, PendingRegistration>>,
     logins: Mutex<HashMap<Id, PendingLogin>>,
     nonces: Mutex<HashMap<(Id, [u8; 16]), u64>>,
-    attempts: Mutex<HashMap<String, Vec<u64>>>,
+    attempts: Mutex<Attempts>,
     waiters: Mutex<HashMap<Id, Arc<Notify>>>,
     transfers: Mutex<HashMap<Id, Transfers>>,
+}
+
+#[derive(Default)]
+struct Attempts {
+    by_username: HashMap<String, Vec<u64>>,
+    overall: std::collections::VecDeque<u64>,
 }
 
 /// An account's announced uploads, with a version that changes with them.
@@ -158,19 +171,31 @@ impl App {
     }
 
     fn allow_attempt(&self, username: &str, now: u64) -> ApiResult<()> {
+        let busy = ApiError(
+            StatusCode::TOO_MANY_REQUESTS,
+            "too many attempts, try again later",
+        );
         let mut attempts = lock(&self.attempts);
-        attempts.retain(|_, times| {
+        while attempts
+            .overall
+            .front()
+            .is_some_and(|&t| now.saturating_sub(t) >= ATTEMPT_WINDOW_MS)
+        {
+            attempts.overall.pop_front();
+        }
+        if attempts.overall.len() >= MAX_ATTEMPTS_OVERALL {
+            return Err(busy);
+        }
+        attempts.by_username.retain(|_, times| {
             times.retain(|&t| now.saturating_sub(t) < ATTEMPT_WINDOW_MS);
             !times.is_empty()
         });
-        let times = attempts.entry(username.to_owned()).or_default();
+        let times = attempts.by_username.entry(username.to_owned()).or_default();
         if times.len() >= MAX_ATTEMPTS {
-            return Err(ApiError(
-                StatusCode::TOO_MANY_REQUESTS,
-                "too many attempts, try again later",
-            ));
+            return Err(busy);
         }
         times.push(now);
+        attempts.overall.push_back(now);
         Ok(())
     }
 
@@ -339,6 +364,12 @@ impl App {
 }
 
 pub fn router(app: Arc<App>) -> Router {
+    // Uploads read their body as a stream and enforce MAX_BODY_BYTES
+    // themselves; everything else takes small bodies only.
+    let items = Router::new().route(
+        "/v1/items",
+        post(post_item).get(get_items).delete(delete_items),
+    );
     Router::new()
         .route("/v1/server", get(server_info))
         .route("/v1/register/start", post(register_start))
@@ -347,12 +378,9 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/v1/login/finish", post(login_finish))
         .route("/v1/devices", get(list_devices))
         .route("/v1/devices/{id}", put(put_device).delete(revoke_device))
-        .route(
-            "/v1/items",
-            post(post_item).get(get_items).delete(delete_items),
-        )
         .route("/v1/items/announce", post(announce_item))
-        .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
+        .layer(DefaultBodyLimit::max(MAX_JSON_BYTES))
+        .merge(items)
         .with_state(app)
 }
 
@@ -779,4 +807,37 @@ async fn get_items(
         pending,
         pending_version,
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn app() -> App {
+        App::new(
+            ServerKeys::generate(&mut OsRng),
+            Store::open(std::path::Path::new(":memory:")).unwrap(),
+            Registration::Invite,
+        )
+    }
+
+    #[test]
+    fn attempts_are_limited_per_username_and_overall() {
+        let app = app();
+        for _ in 0..MAX_ATTEMPTS {
+            assert!(app.allow_attempt("seb", 1_000).is_ok());
+        }
+        assert!(app.allow_attempt("seb", 1_000).is_err());
+        // Another username still gets in, until the overall limit.
+        let mut allowed = MAX_ATTEMPTS;
+        for i in 0.. {
+            if app.allow_attempt(&format!("user{i}"), 1_000).is_err() {
+                break;
+            }
+            allowed += 1;
+        }
+        assert_eq!(allowed, MAX_ATTEMPTS_OVERALL);
+        // Both windows pass.
+        assert!(app.allow_attempt("seb", 1_000 + ATTEMPT_WINDOW_MS).is_ok());
+    }
 }

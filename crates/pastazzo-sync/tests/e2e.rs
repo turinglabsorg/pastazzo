@@ -355,3 +355,22 @@ fn devices_dont_download_their_own_items() {
     assert!(own.cursor > 0, "the cursor still moves past them");
     assert_eq!(remote.items(&mac, 0, 0).unwrap().items.len(), 1);
 }
+
+#[test]
+fn public_endpoints_refuse_big_bodies() {
+    let (url, _, _) = start_server(0);
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .http_status_as_error(false)
+        .build()
+        .into();
+    let big = format!(
+        "{{\"username\":\"seb\",\"request\":\"{}\"}}",
+        "A".repeat(200 * 1024)
+    );
+    let response = agent
+        .post(format!("{url}/v1/login/start"))
+        .content_type("application/json")
+        .send(big.as_bytes())
+        .unwrap();
+    assert_eq!(response.status().as_u16(), 413);
+}
