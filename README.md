@@ -65,12 +65,32 @@ The history lives in:
 ~/.local/share/pastazzo/items
 ```
 
+## Sync Across Devices
+
+In progress ([#1](https://github.com/turinglabsorg/pastazzo/issues/1)): copy on one device, paste on the others, through a server anyone can host. Everything is end-to-end encrypted: the server, and any relay or proxy in front of it, never sees your clipboard, your password or your keys.
+
+- [docs/SECURITY.md](docs/SECURITY.md): threat model
+- [docs/PROTOCOL.md](docs/PROTOCOL.md): cryptography and wire format
+
+Without an account, pastazzo keeps working as it does today, local only.
+
 ## Development
+
+The repository is a Cargo workspace:
+
+- `crates/pastazzo`: the history store and CLI used by the extension
+- `crates/pastazzo-core`: the sync protocol and its end-to-end encryption
 
 Build the backend:
 
 ```bash
 cargo build --release
+```
+
+Run the protocol tests:
+
+```bash
+cargo test -p pastazzo-core
 ```
 
 Install from a local checkout:
@@ -94,3 +114,7 @@ npm test
 ```
 
 The test harness mocks the GNOME backend and verifies the shelf layout, image preview, copy/touch ordering, double-click paste, beep event, close behavior, and clear-history button.
+
+## License
+
+[MIT](LICENSE)
