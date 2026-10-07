@@ -113,3 +113,57 @@ fn device_names_are_kept_to_one_short_line() {
     let json = pastazzo(&data, &["search", ""], b"");
     assert!(json.contains("\"origin\":\"evil\\\"name\\\"\""), "{json}");
 }
+
+fn mode(path: &Path) -> u32 {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(path).unwrap().permissions().mode() & 0o777
+}
+
+fn files(dir: &Path) -> Vec<PathBuf> {
+    std::fs::read_dir(dir)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .collect()
+}
+
+#[test]
+fn the_history_is_readable_by_its_owner_only() {
+    let data = data_dir();
+    pastazzo(&data, &["add", "--origin", "XPS"], b"hunter2");
+    pastazzo(&data, &["add-image", "image/png"], b"\x89PNG fake");
+
+    let items = data.join("pastazzo/items");
+    assert_eq!(mode(&data.join("pastazzo")), 0o700);
+    assert_eq!(mode(&items), 0o700);
+    let written = files(&items);
+    assert_eq!(written.len(), 3, "{written:?}");
+    for file in written {
+        assert_eq!(mode(&file), 0o600, "{}", file.display());
+    }
+}
+
+#[test]
+fn an_older_open_history_is_closed_on_the_next_copy() {
+    use std::os::unix::fs::PermissionsExt;
+    let data = data_dir();
+    let items = data.join("pastazzo/items");
+    std::fs::create_dir_all(&items).unwrap();
+    let old = items.join("00000000000000000001-0000000000000001.txt");
+    std::fs::write(&old, "copied before the update").unwrap();
+    for (path, mode) in [
+        (&data.join("pastazzo"), 0o755),
+        (&items, 0o755),
+        (&old, 0o644),
+    ] {
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
+    }
+
+    pastazzo(&data, &["add"], b"copied after");
+
+    assert_eq!(mode(&data.join("pastazzo")), 0o700);
+    assert_eq!(mode(&items), 0o700);
+    for file in files(&items) {
+        assert_eq!(mode(&file), 0o600, "{}", file.display());
+    }
+    assert_eq!(origins(&data, "before").len(), 1);
+}

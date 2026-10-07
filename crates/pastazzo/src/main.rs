@@ -1,6 +1,7 @@
 use std::env;
-use std::fs;
+use std::fs::{self, DirBuilder, OpenOptions};
 use std::io::{self, Read, Write};
+use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -109,8 +110,7 @@ fn add_from_stdin(origin: &str) -> Result<(), String> {
         return Ok(());
     }
 
-    let dir = items_dir()?;
-    fs::create_dir_all(&dir).map_err(|err| format!("create history dir: {err}"))?;
+    let dir = history_dir()?;
 
     let hash = fnv1a64(text.as_bytes());
     remove_existing_hash(&dir, hash)?;
@@ -119,9 +119,7 @@ fn add_from_stdin(origin: &str) -> Result<(), String> {
     let id = format!("{timestamp:020}-{hash:016x}");
     let path = dir.join(format!("{id}.txt"));
 
-    let mut file = fs::File::create(&path).map_err(|err| format!("create item: {err}"))?;
-    file.write_all(text.as_bytes())
-        .map_err(|err| format!("write item: {err}"))?;
+    write_private(&path, text.as_bytes()).map_err(|err| format!("write item: {err}"))?;
     write_origin(&dir, &id, origin)?;
 
     prune_history(&dir)?;
@@ -144,8 +142,7 @@ fn add_image_from_stdin(mime: &str, origin: &str) -> Result<(), String> {
         return Err(format!("image is larger than {MAX_IMAGE_BYTES} bytes"));
     }
 
-    let dir = items_dir()?;
-    fs::create_dir_all(&dir).map_err(|err| format!("create history dir: {err}"))?;
+    let dir = history_dir()?;
 
     let hash = fnv1a64(&bytes);
     remove_existing_hash(&dir, hash)?;
@@ -155,9 +152,7 @@ fn add_image_from_stdin(mime: &str, origin: &str) -> Result<(), String> {
     let extension = image_extension(mime);
     let path = dir.join(format!("{id}.{extension}"));
 
-    let mut file = fs::File::create(&path).map_err(|err| format!("create image item: {err}"))?;
-    file.write_all(&bytes)
-        .map_err(|err| format!("write image item: {err}"))?;
+    write_private(&path, &bytes).map_err(|err| format!("write image item: {err}"))?;
     write_origin(&dir, &id, origin)?;
 
     prune_history(&dir)?;
@@ -438,7 +433,8 @@ fn write_origin(dir: &Path, id: &str, origin: &str) -> Result<(), String> {
     if origin.trim().is_empty() {
         return Ok(());
     }
-    fs::write(origin_path(dir, id), origin.trim()).map_err(|err| format!("write origin: {err}"))
+    write_private(&origin_path(dir, id), origin.trim().as_bytes())
+        .map_err(|err| format!("write origin: {err}"))
 }
 
 fn read_origin(dir: &Path, id: &str) -> String {
@@ -458,7 +454,7 @@ fn touch_item(id: &str) -> Result<String, String> {
         return Err("invalid item id".to_string());
     }
 
-    let dir = items_dir()?;
+    let dir = history_dir()?;
     let current_path = fs::read_dir(&dir)
         .map_err(|err| format!("read history dir: {err}"))?
         .filter_map(Result::ok)
@@ -486,6 +482,57 @@ fn touch_item(id: &str) -> Result<String, String> {
     let _ = fs::rename(origin_path(&dir, id), origin_path(&dir, &new_id));
     prune_history(&dir)?;
     Ok(new_id)
+}
+
+/// The history holds whatever was copied, passwords included, so only its
+/// owner can list or read it. Older installs made it with the umask's
+/// modes: the first write after an update tightens them.
+fn history_dir() -> Result<PathBuf, String> {
+    let dir = items_dir()?;
+    DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(&dir)
+        .map_err(|err| format!("create history dir: {err}"))?;
+    if let Some(root) = dir.parent() {
+        set_mode(root, 0o700)?;
+    }
+    if set_mode(&dir, 0o700)? {
+        for entry in fs::read_dir(&dir).map_err(|err| format!("read history dir: {err}"))? {
+            let path = entry
+                .map_err(|err| format!("read history entry: {err}"))?
+                .path();
+            if path.is_file() {
+                set_mode(&path, 0o600)?;
+            }
+        }
+    }
+    Ok(dir)
+}
+
+/// Sets `mode` on `path` and says whether it had to change.
+fn set_mode(path: &Path, mode: u32) -> Result<bool, String> {
+    let current = fs::metadata(path)
+        .map_err(|err| format!("read {}: {err}", path.display()))?
+        .permissions()
+        .mode()
+        & 0o777;
+    if current == mode {
+        return Ok(false);
+    }
+    fs::set_permissions(path, fs::Permissions::from_mode(mode))
+        .map_err(|err| format!("protect {}: {err}", path.display()))?;
+    Ok(true)
+}
+
+fn write_private(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(path)?
+        .write_all(bytes)
 }
 
 fn items_dir() -> Result<PathBuf, String> {

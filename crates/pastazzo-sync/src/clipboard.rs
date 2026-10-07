@@ -12,8 +12,9 @@
 
 use std::collections::HashSet;
 use std::ffi::OsString;
-use std::fs;
+use std::fs::{self, DirBuilder, OpenOptions};
 use std::io::Write;
+use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -187,8 +188,7 @@ impl PastazzoStore {
     /// clipboard. Written under a temporary name first, so the extension
     /// never reads a half-written file.
     fn send_to_extension(&self, content: &Content) -> Result<()> {
-        fs::create_dir_all(&self.inbox)
-            .map_err(|e| format!("create {}: {e}", self.inbox.display()))?;
+        self.make_inbox()?;
         self.drop_stale_inbox_files();
         let (extension, bytes): (&str, &[u8]) = match content {
             Content::Text(text) => ("txt", text.as_bytes()),
@@ -197,8 +197,39 @@ impl PastazzoStore {
         };
         let name = format!("{:020}-{:08x}", crate::now(), rand::random::<u32>());
         let tmp = self.inbox.join(format!(".{name}.tmp"));
-        fs::write(&tmp, bytes).map_err(|e| format!("write {}: {e}", tmp.display()))?;
+        OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&tmp)
+            .and_then(|mut file| file.write_all(bytes))
+            .map_err(|e| format!("write {}: {e}", tmp.display()))?;
         fs::rename(&tmp, self.inbox.join(format!("{name}.{extension}"))).map_err(|e| e.to_string())
+    }
+
+    /// Received items are clipboard contents: the inbox, and pastazzo's data
+    /// directory around it, are readable by their owner only.
+    fn make_inbox(&self) -> Result<()> {
+        DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(&self.inbox)
+            .map_err(|e| format!("create {}: {e}", self.inbox.display()))?;
+        for dir in [self.inbox.parent(), Some(self.inbox.as_path())]
+            .into_iter()
+            .flatten()
+        {
+            let mode = fs::metadata(dir)
+                .map_err(|e| e.to_string())?
+                .permissions()
+                .mode()
+                & 0o777;
+            if mode != 0o700 {
+                fs::set_permissions(dir, fs::Permissions::from_mode(0o700))
+                    .map_err(|e| format!("protect {}: {e}", dir.display()))?;
+            }
+        }
+        Ok(())
     }
 
     /// If the extension isn't running, don't let the inbox pile up.
@@ -318,7 +349,10 @@ impl Pasteboard {
     /// Images go through a private temporary file and AppleScript.
     fn copy_png(data: &[u8]) -> Result<()> {
         let dir = std::env::temp_dir().join(format!("pastazzo-{}", rand::random::<u64>()));
-        fs::create_dir(&dir).map_err(|e| e.to_string())?;
+        DirBuilder::new()
+            .mode(0o700)
+            .create(&dir)
+            .map_err(|e| e.to_string())?;
         let path = dir.join("clip.png");
         let result = fs::write(&path, data)
             .map_err(|e| e.to_string())
@@ -385,5 +419,43 @@ impl Clipboard for Pasteboard {
 
     fn clear_history(&mut self) -> Result<()> {
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn mode(path: &Path) -> u32 {
+        fs::metadata(path).unwrap().permissions().mode() & 0o777
+    }
+
+    #[test]
+    fn received_items_wait_in_a_private_inbox() {
+        let root = std::env::temp_dir()
+            .join(format!("pastazzo-inbox-{}", rand::random::<u64>()))
+            .join("pastazzo");
+        fs::create_dir_all(&root).unwrap();
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o755)).unwrap();
+        let store = PastazzoStore::at(
+            root.join("items"),
+            root.join("inbox"),
+            PathBuf::from("pastazzo"),
+        );
+
+        store
+            .send_to_extension(&Content::Text("hunter2".to_owned()))
+            .unwrap();
+
+        assert_eq!(mode(&root), 0o700);
+        assert_eq!(mode(&root.join("inbox")), 0o700);
+        let received: Vec<_> = fs::read_dir(root.join("inbox"))
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .collect();
+        assert_eq!(received.len(), 1);
+        assert_eq!(mode(&received[0]), 0o600);
+        assert_eq!(fs::read_to_string(&received[0]).unwrap(), "hunter2");
+        fs::remove_dir_all(root.parent().unwrap()).unwrap();
     }
 }
