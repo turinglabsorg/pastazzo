@@ -577,10 +577,103 @@ export default class PastazzoExtension extends Extension {
             return GLib.SOURCE_CONTINUE;
         });
         this._pollClipboard();
+        this._watchInbox();
+    }
+
+    // pastazzo-sync drops items received from other devices in the inbox:
+    // background programs can't set the Wayland clipboard, the shell can.
+    _watchInbox() {
+        this._inbox = Gio.File.new_for_path(`${GLib.get_user_data_dir()}/pastazzo/inbox`);
+        try {
+            this._inbox.make_directory_with_parents(null);
+        } catch (error) {
+            if (!error.matches(Gio.IOErrorEnum, Gio.IOErrorEnum.EXISTS))
+                logError(error, 'Pastazzo failed to create the sync inbox');
+        }
+        try {
+            this._inboxMonitor = this._inbox.monitor_directory(Gio.FileMonitorFlags.WATCH_MOVES, null);
+            this._inboxChangedId = this._inboxMonitor.connect('changed', () => this._scheduleInbox());
+        } catch (error) {
+            logError(error, 'Pastazzo failed to watch the sync inbox');
+        }
+        this._scheduleInbox();
+    }
+
+    _unwatchInbox() {
+        if (this._inboxTimeoutId) {
+            GLib.Source.remove(this._inboxTimeoutId);
+            this._inboxTimeoutId = 0;
+        }
+        if (this._inboxMonitor) {
+            this._inboxMonitor.disconnect(this._inboxChangedId);
+            this._inboxMonitor.cancel();
+            this._inboxMonitor = null;
+        }
+        this._inbox = null;
+    }
+
+    _scheduleInbox() {
+        if (this._inboxTimeoutId)
+            return;
+        this._inboxTimeoutId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 100, () => {
+            this._inboxTimeoutId = 0;
+            this._drainInbox();
+            return GLib.SOURCE_REMOVE;
+        });
+    }
+
+    // Puts the newest received item on the clipboard and removes them all.
+    // The sync daemon already added them to the history.
+    _drainInbox() {
+        if (!this._inbox)
+            return;
+        let names = [];
+        try {
+            const children = this._inbox.enumerate_children('standard::name', Gio.FileQueryInfoFlags.NONE, null);
+            let info;
+            while ((info = children.next_file(null)) !== null) {
+                const name = info.get_name();
+                if (!name.startsWith('.'))
+                    names.push(name);
+            }
+            children.close(null);
+        } catch (error) {
+            logError(error, 'Pastazzo failed to read the sync inbox');
+            return;
+        }
+        if (names.length === 0)
+            return;
+
+        names.sort();
+        const newest = this._inbox.get_child(names.pop());
+        for (const name of names)
+            this._inbox.get_child(name).delete_async(GLib.PRIORITY_DEFAULT, null, null);
+
+        newest.load_bytes_async(null, (_file, result) => {
+            try {
+                const [bytes] = newest.load_bytes_finish(result);
+                const path = newest.get_path();
+                if (path.endsWith('.txt')) {
+                    const text = new TextDecoder().decode(bytes.get_data());
+                    this._lastText = text;
+                    this._clipboard.set_text(CLIPBOARD_TYPE, text);
+                } else {
+                    const mime = imageMimeFromPath(path);
+                    if (mime) {
+                        this._lastImageKey = `${mime}:${bytes.get_size()}`;
+                        this._clipboard.set_content(CLIPBOARD_TYPE, mime, bytes);
+                    }
+                }
+            } catch (error) {
+                logError(error, 'Pastazzo failed to apply a synced item');
+            }
+            newest.delete_async(GLib.PRIORITY_DEFAULT, null, null);
+        });
     }
 
     disable() {
         Main.wm.removeKeybinding('toggle-pastazzo');
+        this._unwatchInbox();
 
         if (this._pollId) {
             GLib.Source.remove(this._pollId);
