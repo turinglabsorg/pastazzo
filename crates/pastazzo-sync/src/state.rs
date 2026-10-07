@@ -13,7 +13,7 @@ use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 
 use pastazzo_core::Id;
-use pastazzo_core::account::AccountKey;
+use pastazzo_core::account::{AccountKey, AccountSecret};
 use pastazzo_core::api::B64;
 use pastazzo_core::device::DeviceKeys;
 use pastazzo_core::request::Scope;
@@ -38,6 +38,10 @@ pub struct State {
     pub username: String,
     pub account: Id,
     pub account_key: AccountKey,
+    /// What a new device needs, next to the password, to open the account
+    /// key: this device hands it over when it approves one. `None` for
+    /// devices of accounts made before approvals, which can't approve.
+    pub account_secret: Option<AccountSecret>,
     pub device: DeviceKeys,
     pub device_name: String,
     /// Where to resume reading items from.
@@ -65,6 +69,8 @@ struct Stored {
     account_key: Option<B64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     device: Option<B64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    account_secret: Option<B64>,
 }
 
 impl Drop for Stored {
@@ -76,11 +82,15 @@ impl Drop for Stored {
         if let Some(device) = &mut self.device {
             device.0.zeroize();
         }
+        if let Some(secret) = &mut self.account_secret {
+            secret.0.zeroize();
+        }
     }
 }
 
-/// `version(1) || u32be(epoch) || account key(32) || device secret keys`
-const SECRETS_VERSION: u8 = 1;
+/// `2 || u32be(epoch) || account key(32) || account secret(32) || device secret keys`,
+/// or version 1, from before approvals, without the account secret.
+const SECRETS_VERSION: u8 = 2;
 
 fn host(server_url: &str) -> &str {
     let rest = server_url
@@ -119,24 +129,43 @@ impl State {
     }
 
     fn secrets(&self) -> Zeroizing<Vec<u8>> {
-        let mut out = Zeroizing::new(vec![SECRETS_VERSION]);
+        let mut out = Zeroizing::new(Vec::new());
+        out.push(if self.account_secret.is_some() {
+            SECRETS_VERSION
+        } else {
+            1
+        });
         out.extend_from_slice(&self.account_key.epoch().to_be_bytes());
         out.extend_from_slice(self.account_key.expose_secret());
+        if let Some(secret) = &self.account_secret {
+            out.extend_from_slice(secret.expose_secret());
+        }
         out.extend_from_slice(&self.device.to_secret_bytes());
         out
     }
 
-    fn parse_secrets(bytes: &[u8]) -> Result<(AccountKey, DeviceKeys)> {
+    fn parse_secrets(bytes: &[u8]) -> Result<(AccountKey, Option<AccountSecret>, DeviceKeys)> {
         let malformed = || "the keys in the keychain are malformed".to_owned();
-        if bytes.len() < 37 || bytes[0] != SECRETS_VERSION {
+        let has_secret = match bytes.first() {
+            Some(1) => false,
+            Some(&SECRETS_VERSION) => true,
+            _ => return Err(malformed()),
+        };
+        let device_at = if has_secret { 69 } else { 37 };
+        if bytes.len() < device_at {
             return Err(malformed());
         }
         let epoch = u32::from_be_bytes(bytes[1..5].try_into().expect("4 bytes"));
         let mut key = Zeroizing::new([0u8; 32]);
         key.copy_from_slice(&bytes[5..37]);
         let account_key = AccountKey::from_bytes(epoch, *key).map_err(|_| malformed())?;
-        let device = DeviceKeys::from_secret_bytes(&bytes[37..]).map_err(|_| malformed())?;
-        Ok((account_key, device))
+        let account_secret = has_secret.then(|| {
+            let mut secret = Zeroizing::new([0u8; 32]);
+            secret.copy_from_slice(&bytes[37..69]);
+            AccountSecret::from_bytes(*secret)
+        });
+        let device = DeviceKeys::from_secret_bytes(&bytes[device_at..]).map_err(|_| malformed())?;
+        Ok((account_key, account_secret, device))
     }
 
     pub fn load(path: &Path) -> Result<Self> {
@@ -155,43 +184,54 @@ impl State {
             serde_json::from_str(&text).map_err(|e| format!("read {}: {e}", path.display()))?;
         let malformed = |what: &str| format!("{}: invalid {what}", path.display());
 
-        let (account_key, device, storage) = if stored.key_storage == Some(KeyStorage::Keychain) {
-            let device_id: Id = stored
-                .device_id
-                .as_ref()
-                .and_then(B64::array)
-                .ok_or_else(|| malformed("device id"))?;
-            let user = Self::keychain_user(&stored.username, &stored.server_url, &device_id);
-            let secrets = keychain
-                .get(&user)
-                .map_err(|e| format!("can't read this device's keys: {e}"))?;
-            let (account_key, device) = Self::parse_secrets(&secrets)?;
-            if device.id() != device_id {
-                return Err("the keys in the keychain belong to another device".to_owned());
-            }
-            (account_key, device, KeyStorage::Keychain)
-        } else {
-            let key = stored
-                .account_key
-                .as_ref()
-                .and_then(B64::array)
-                .ok_or_else(|| malformed("account key"))?;
-            let account_key = AccountKey::from_bytes(stored.epoch.unwrap_or(0), key)
-                .map_err(|_| malformed("account key"))?;
-            let device_secret = stored
-                .device
-                .as_ref()
-                .ok_or_else(|| malformed("device keys"))?;
-            let device = DeviceKeys::from_secret_bytes(&device_secret.0)
-                .map_err(|_| malformed("device keys"))?;
-            (account_key, device, KeyStorage::File)
-        };
+        let (account_key, account_secret, device, storage) =
+            if stored.key_storage == Some(KeyStorage::Keychain) {
+                let device_id: Id = stored
+                    .device_id
+                    .as_ref()
+                    .and_then(B64::array)
+                    .ok_or_else(|| malformed("device id"))?;
+                let user = Self::keychain_user(&stored.username, &stored.server_url, &device_id);
+                let secrets = keychain
+                    .get(&user)
+                    .map_err(|e| format!("can't read this device's keys: {e}"))?;
+                let (account_key, account_secret, device) = Self::parse_secrets(&secrets)?;
+                if device.id() != device_id {
+                    return Err("the keys in the keychain belong to another device".to_owned());
+                }
+                (account_key, account_secret, device, KeyStorage::Keychain)
+            } else {
+                let key = stored
+                    .account_key
+                    .as_ref()
+                    .and_then(B64::array)
+                    .ok_or_else(|| malformed("account key"))?;
+                let account_key = AccountKey::from_bytes(stored.epoch.unwrap_or(0), key)
+                    .map_err(|_| malformed("account key"))?;
+                let device_secret = stored
+                    .device
+                    .as_ref()
+                    .ok_or_else(|| malformed("device keys"))?;
+                let device = DeviceKeys::from_secret_bytes(&device_secret.0)
+                    .map_err(|_| malformed("device keys"))?;
+                let account_secret = stored
+                    .account_secret
+                    .as_ref()
+                    .map(|s| {
+                        s.array()
+                            .map(AccountSecret::from_bytes)
+                            .ok_or_else(|| malformed("account secret"))
+                    })
+                    .transpose()?;
+                (account_key, account_secret, device, KeyStorage::File)
+            };
 
         let mut state = Self {
             identity: ServerIdentity::from_bytes(&stored.identity.0)
                 .map_err(|_| malformed("server identity"))?,
             account: stored.account.array().ok_or_else(|| malformed("account"))?,
             account_key,
+            account_secret,
             device,
             server_url: stored.server_url.clone(),
             username: stored.username.clone(),
@@ -283,6 +323,11 @@ impl State {
             epoch: in_file.then(|| self.account_key.epoch()),
             account_key: in_file.then(|| B64(self.account_key.expose_secret().to_vec())),
             device: in_file.then(|| B64(self.device.to_secret_bytes().to_vec())),
+            account_secret: self
+                .account_secret
+                .as_ref()
+                .filter(|_| in_file)
+                .map(|s| B64(s.expose_secret().to_vec())),
         };
         let json = Zeroizing::new(serde_json::to_vec_pretty(&stored).map_err(|e| e.to_string())?);
         let dir = path.parent().ok_or("state path has no parent directory")?;
@@ -330,6 +375,7 @@ mod tests {
             username: "seb".into(),
             account: [1; 16],
             account_key: AccountKey::generate(&mut OsRng),
+            account_secret: Some(AccountSecret::generate(&mut OsRng)),
             device: DeviceKeys::generate(&mut OsRng),
             device_name: "XPS".into(),
             cursor: 7,
@@ -362,6 +408,10 @@ mod tests {
         assert_eq!(
             loaded.account_key.expose_secret(),
             state.account_key.expose_secret()
+        );
+        assert_eq!(
+            loaded.account_secret.as_ref().unwrap().expose_secret(),
+            state.account_secret.as_ref().unwrap().expose_secret()
         );
         assert_eq!(loaded.device.public(), state.device.public());
         assert_eq!(loaded.cursor, 7);

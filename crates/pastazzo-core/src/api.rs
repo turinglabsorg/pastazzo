@@ -182,6 +182,10 @@ pub struct ItemsPage {
 pub struct DeviceRecords {
     /// [`crate::device::SealedDeviceRecord::to_bytes`]
     pub records: Vec<B64>,
+    /// Public keys ([`crate::device::DevicePublic::to_bytes`]) of devices
+    /// that logged in and wait for one of these to approve them.
+    #[serde(default)]
+    pub pending: Vec<B64>,
 }
 
 /// Body of every error response.

@@ -86,7 +86,7 @@ pub fn verify_login_response(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::account::AccountKey;
+    use crate::account::{AccountKey, AccountSecret};
     use crate::device::DeviceKeys;
     use rand::rngs::OsRng;
 
@@ -109,6 +109,7 @@ mod tests {
         let wrapped = WrappedAccountKey::wrap(
             &AccountKey::generate(&mut OsRng),
             &[1; 64],
+            &AccountSecret::from_bytes([5; 32]),
             &[2; 16],
             &mut OsRng,
         );
@@ -121,6 +122,7 @@ mod tests {
         let other = WrappedAccountKey::wrap(
             &AccountKey::generate(&mut OsRng),
             &[1; 64],
+            &AccountSecret::from_bytes([5; 32]),
             &[2; 16],
             &mut OsRng,
         );

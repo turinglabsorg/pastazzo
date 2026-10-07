@@ -284,6 +284,28 @@ impl App {
         (transfers.version, pending)
     }
 
+    /// [`App::authenticate`], for a device that's been approved: the
+    /// account's first one, or one another device approved.
+    fn authenticate_approved(
+        &self,
+        method: &Method,
+        uri: &Uri,
+        headers: &HeaderMap,
+        body: &[u8],
+    ) -> ApiResult<(Id, Id)> {
+        let (account, device) = self.authenticate(method, uri, headers, body)?;
+        if !lock(&self.store)
+            .device(&device)?
+            .is_some_and(|d| d.approved)
+        {
+            return Err(ApiError(
+                StatusCode::FORBIDDEN,
+                "this device is waiting for approval",
+            ));
+        }
+        Ok((account, device))
+    }
+
     /// The account and device a signed request claims to come from, before
     /// its body has arrived: enough to refuse unknown or revoked devices
     /// early. [`App::authenticate`] still checks everything at the end.
@@ -299,6 +321,12 @@ impl App {
             .ok_or(ApiError(StatusCode::UNAUTHORIZED, "unknown device"))?;
         if device.revoked {
             return Err(ApiError(StatusCode::UNAUTHORIZED, "device revoked"));
+        }
+        if !device.approved {
+            return Err(ApiError(
+                StatusCode::FORBIDDEN,
+                "this device is waiting for approval",
+            ));
         }
         Ok((device.account, device_id))
     }
@@ -378,6 +406,7 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/v1/login/finish", post(login_finish))
         .route("/v1/devices", get(list_devices))
         .route("/v1/devices/{id}", put(put_device).delete(revoke_device))
+        .route("/v1/devices/{id}/grant", put(put_grant).get(get_grant))
         .route("/v1/items/announce", post(announce_item))
         .layer(DefaultBodyLimit::max(MAX_JSON_BYTES))
         .merge(items)
@@ -559,6 +588,9 @@ async fn login_finish(
         ));
     }
 
+    // The account's first device approves itself: nobody else is there to.
+    lock(&app.store).approve_if_first(&device.id, &account, now)?;
+
     let wrapped = WrappedAccountKey::from_bytes(&wrapped)
         .map_err(|_| ApiError(StatusCode::INTERNAL_SERVER_ERROR, "corrupt account"))?;
     let tag = session::login_response_tag(&session_key, &pending.username, &account, &wrapped);
@@ -577,7 +609,7 @@ async fn put_device(
     headers: HeaderMap,
     body: Bytes,
 ) -> ApiResult<StatusCode> {
-    let (_, device_id) = app.authenticate(&method, &uri, &headers, &body)?;
+    let (_, device_id) = app.authenticate_approved(&method, &uri, &headers, &body)?;
     if B64::decode(&id).as_deref() != Some(&device_id[..]) {
         return Err(ApiError(
             StatusCode::FORBIDDEN,
@@ -603,11 +635,62 @@ async fn list_devices(
     uri: Uri,
     headers: HeaderMap,
 ) -> ApiResult<Json<DeviceRecords>> {
-    let (account, _) = app.authenticate(&method, &uri, &headers, b"")?;
-    let records = lock(&app.store).device_records(&account)?;
+    let (account, _) = app.authenticate_approved(&method, &uri, &headers, b"")?;
+    let store = lock(&app.store);
+    let records = store.device_records(&account)?;
+    let pending = store.pending_devices(&account, now())?;
     Ok(Json(DeviceRecords {
         records: records.into_iter().map(B64).collect(),
+        pending: pending.into_iter().map(B64).collect(),
     }))
+}
+
+/// An approved device hands a pending one the account secret, sealed to it.
+async fn put_grant(
+    State(app): State<Arc<App>>,
+    Path(id): Path<String>,
+    method: Method,
+    uri: Uri,
+    headers: HeaderMap,
+    body: Bytes,
+) -> ApiResult<StatusCode> {
+    let (account, _) = app.authenticate_approved(&method, &uri, &headers, &body)?;
+    let id: Id = B64::decode(&id)
+        .and_then(|v| v.try_into().ok())
+        .ok_or(bad("invalid device id"))?;
+    if body.len() > 512 {
+        return Err(bad("invalid grant"));
+    }
+    if lock(&app.store).set_grant(&id, &account, &body, now())? {
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err(ApiError(
+            StatusCode::NOT_FOUND,
+            "no device waiting for approval with that id",
+        ))
+    }
+}
+
+/// A device collects the grant that approved it.
+async fn get_grant(
+    State(app): State<Arc<App>>,
+    Path(id): Path<String>,
+    method: Method,
+    uri: Uri,
+    headers: HeaderMap,
+) -> ApiResult<Bytes> {
+    // Waiting devices may call this: it's how they stop waiting.
+    let (_, device) = app.authenticate(&method, &uri, &headers, b"")?;
+    if B64::decode(&id).as_deref() != Some(&device[..]) {
+        return Err(ApiError(
+            StatusCode::FORBIDDEN,
+            "a device can only collect its own grant",
+        ));
+    }
+    lock(&app.store)
+        .grant(&device)?
+        .map(Bytes::from)
+        .ok_or(ApiError(StatusCode::NOT_FOUND, "not approved yet"))
 }
 
 async fn revoke_device(
@@ -617,7 +700,7 @@ async fn revoke_device(
     uri: Uri,
     headers: HeaderMap,
 ) -> ApiResult<StatusCode> {
-    let (account, _) = app.authenticate(&method, &uri, &headers, b"")?;
+    let (account, _) = app.authenticate_approved(&method, &uri, &headers, b"")?;
     let id: Id = B64::decode(&id)
         .and_then(|v| v.try_into().ok())
         .ok_or(bad("invalid device id"))?;
@@ -635,7 +718,7 @@ async fn announce_item(
     headers: HeaderMap,
     body: Bytes,
 ) -> ApiResult<StatusCode> {
-    let (account, device_id) = app.authenticate(&method, &uri, &headers, &body)?;
+    let (account, device_id) = app.authenticate_approved(&method, &uri, &headers, &body)?;
     let announce: ItemAnnounce =
         serde_json::from_slice(&body).map_err(|_| bad("invalid announcement"))?;
     let item = id_from(&announce.id, "invalid item id")?;
@@ -703,7 +786,7 @@ async fn post_item(
         }
     }
 
-    let (account, device_id) = app.authenticate(&method, &uri, &headers, &data)?;
+    let (account, device_id) = app.authenticate_approved(&method, &uri, &headers, &data)?;
     let item = SealedItem::from_bytes(&data).map_err(|_| bad("invalid item"))?;
     if item.header.device != device_id {
         return Err(ApiError(
@@ -725,7 +808,7 @@ async fn delete_items(
     uri: Uri,
     headers: HeaderMap,
 ) -> ApiResult<StatusCode> {
-    let (account, _) = app.authenticate(&method, &uri, &headers, b"")?;
+    let (account, _) = app.authenticate_approved(&method, &uri, &headers, b"")?;
     lock(&app.store).delete_items(&account)?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -746,7 +829,7 @@ async fn get_items(
     uri: Uri,
     headers: HeaderMap,
 ) -> ApiResult<Json<ItemsPage>> {
-    let (account, device) = app.authenticate(&method, &uri, &headers, b"")?;
+    let (account, device) = app.authenticate_approved(&method, &uri, &headers, b"")?;
     let after = match query.after.as_deref() {
         // A new device only wants what comes next.
         Some("latest") => {
@@ -819,6 +902,122 @@ mod tests {
             Store::open(std::path::Path::new(":memory:")).unwrap(),
             Registration::Invite,
         )
+    }
+
+    fn signed(
+        keys: &pastazzo_core::device::DeviceKeys,
+        app: &App,
+        account: &Id,
+        method: &str,
+        path: &str,
+    ) -> axum::http::Request<Body> {
+        let signature = RequestSignature::sign(
+            keys,
+            &Scope {
+                server_fingerprint: app.fingerprint,
+                account: *account,
+            },
+            method,
+            path,
+            b"",
+            now(),
+            &mut OsRng,
+        );
+        axum::http::Request::builder()
+            .method(method)
+            .uri(path)
+            .header(api::HEADER_DEVICE, B64::encode(&signature.device))
+            .header(api::HEADER_TIMESTAMP, signature.timestamp.to_string())
+            .header(api::HEADER_NONCE, B64::encode(&signature.nonce))
+            .header(api::HEADER_SIGNATURE, B64::encode(&signature.signature))
+            .body(Body::empty())
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn waiting_devices_can_only_collect_their_grant() {
+        use pastazzo_core::device::DeviceKeys;
+        use tower::ServiceExt;
+
+        let app = app();
+        let account = [3; 16];
+        let first = DeviceKeys::generate(&mut OsRng);
+        let waiting = DeviceKeys::generate(&mut OsRng);
+        {
+            let mut store = lock(&app.store);
+            store
+                .create_account(&account, "seb", b"f", b"k", None, 0)
+                .unwrap();
+            store
+                .add_device(&first.id(), &account, &first.public().to_bytes(), now())
+                .unwrap();
+            store.approve_if_first(&first.id(), &account, 0).unwrap();
+            store
+                .add_device(&waiting.id(), &account, &waiting.public().to_bytes(), now())
+                .unwrap();
+            assert!(!store.approve_if_first(&waiting.id(), &account, 1).unwrap());
+        }
+        let app = Arc::new(app);
+        let call = |request: axum::http::Request<Body>| {
+            let router = router(app.clone());
+            async move { router.oneshot(request).await.unwrap().status().as_u16() }
+        };
+        let grant_path = format!("/v1/devices/{}/grant", B64::encode(&waiting.id()));
+
+        for path in ["/v1/items?after=0", "/v1/devices"] {
+            assert_eq!(
+                call(signed(&waiting, &app, &account, "GET", path)).await,
+                403,
+                "{path}"
+            );
+            assert_eq!(
+                call(signed(&first, &app, &account, "GET", path)).await,
+                200,
+                "{path}"
+            );
+        }
+        assert_eq!(
+            call(signed(&waiting, &app, &account, "GET", &grant_path)).await,
+            404
+        );
+        // Only the device itself collects its grant.
+        assert_eq!(
+            call(signed(&first, &app, &account, "GET", &grant_path)).await,
+            403
+        );
+
+        // The first device approves it; now it's in.
+        let grant = axum::http::Request::builder()
+            .method("PUT")
+            .uri(&grant_path);
+        let signature = RequestSignature::sign(
+            &first,
+            &Scope {
+                server_fingerprint: app.fingerprint,
+                account,
+            },
+            "PUT",
+            &grant_path,
+            b"sealed grant",
+            now(),
+            &mut OsRng,
+        );
+        let grant = grant
+            .header(api::HEADER_DEVICE, B64::encode(&signature.device))
+            .header(api::HEADER_TIMESTAMP, signature.timestamp.to_string())
+            .header(api::HEADER_NONCE, B64::encode(&signature.nonce))
+            .header(api::HEADER_SIGNATURE, B64::encode(&signature.signature))
+            .body(Body::from("sealed grant"))
+            .unwrap();
+        assert_eq!(call(grant).await, 204);
+        assert_eq!(
+            call(signed(&waiting, &app, &account, "GET", &grant_path)).await,
+            200
+        );
+        assert_eq!(
+            call(signed(&waiting, &app, &account, "GET", "/v1/items?after=0")).await,
+            200
+        );
     }
 
     #[test]

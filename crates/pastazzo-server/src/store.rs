@@ -26,7 +26,12 @@ pub struct Device {
     pub account: Id,
     pub public: Vec<u8>,
     pub revoked: bool,
+    /// The account's first device, or one another device approved.
+    pub approved: bool,
 }
+
+/// A device that logged in and waits for another one to approve it.
+const PENDING_TTL_MS: u64 = 24 * 60 * 60 * 1000;
 
 pub struct Invite {
     pub public: [u8; 32],
@@ -66,7 +71,9 @@ impl Store {
                  public BLOB NOT NULL,
                  record BLOB,
                  created_at INTEGER NOT NULL,
-                 revoked_at INTEGER
+                 revoked_at INTEGER,
+                 approved_at INTEGER,
+                 grant BLOB
              );
              CREATE TABLE IF NOT EXISTS items (
                  seq INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -79,6 +86,18 @@ impl Store {
              );
              CREATE INDEX IF NOT EXISTS items_by_account ON items (account, seq);",
         )?;
+        // Databases from before device approval: their devices were all in.
+        let columns: Vec<String> = db
+            .prepare("SELECT name FROM pragma_table_info('devices')")?
+            .query_map([], |row| row.get(0))?
+            .collect::<rusqlite::Result<_>>()?;
+        if !columns.iter().any(|c| c == "approved_at") {
+            db.execute_batch(
+                "ALTER TABLE devices ADD COLUMN approved_at INTEGER;
+                 ALTER TABLE devices ADD COLUMN grant BLOB;
+                 UPDATE devices SET approved_at = created_at WHERE record IS NOT NULL;",
+            )?;
+        }
         Ok(Self { db })
     }
 
@@ -205,23 +224,25 @@ impl Store {
     pub fn device(&self, id: &Id) -> rusqlite::Result<Option<Device>> {
         self.db
             .query_row(
-                "SELECT account, public, revoked_at FROM devices WHERE id = ?1",
+                "SELECT account, public, revoked_at, approved_at FROM devices WHERE id = ?1",
                 params![&id[..]],
                 |row| {
                     Ok((
                         row.get::<_, Vec<u8>>(0)?,
                         row.get(1)?,
                         row.get::<_, Option<i64>>(2)?,
+                        row.get::<_, Option<i64>>(3)?,
                     ))
                 },
             )
             .optional()
             .map(|row| {
-                row.and_then(|(account, public, revoked_at)| {
+                row.and_then(|(account, public, revoked_at, approved_at)| {
                     Some(Device {
                         account: account.try_into().ok()?,
                         public,
                         revoked: revoked_at.is_some(),
+                        approved: approved_at.is_some(),
                     })
                 })
             })
@@ -257,9 +278,60 @@ impl Store {
         Ok(())
     }
 
+    /// Approves the account's first device: nobody else is there to do it.
+    /// Returns whether it was the first.
+    pub fn approve_if_first(&self, id: &Id, account: &Id, now: u64) -> rusqlite::Result<bool> {
+        Ok(self.db.execute(
+            "UPDATE devices SET approved_at = ?3 WHERE id = ?1 AND approved_at IS NULL AND NOT EXISTS (
+                 SELECT 1 FROM devices WHERE account = ?2 AND approved_at IS NOT NULL AND revoked_at IS NULL)",
+            params![&id[..], &account[..], now as i64],
+        )? == 1)
+    }
+
+    /// Public keys of the account's devices waiting for approval. Requests
+    /// nobody approved within a day are dropped.
+    pub fn pending_devices(&self, account: &Id, now: u64) -> rusqlite::Result<Vec<Vec<u8>>> {
+        self.db.execute(
+            "UPDATE devices SET revoked_at = ?2 WHERE account = ?1 AND approved_at IS NULL AND revoked_at IS NULL AND created_at < ?3",
+            params![&account[..], now as i64, now.saturating_sub(PENDING_TTL_MS) as i64],
+        )?;
+        let mut statement = self.db.prepare(
+            "SELECT public FROM devices WHERE account = ?1 AND approved_at IS NULL AND revoked_at IS NULL ORDER BY created_at",
+        )?;
+        let rows = statement.query_map(params![&account[..]], |row| row.get(0))?;
+        rows.collect()
+    }
+
+    /// Stores the grant an approved device made for a pending one, which
+    /// approves it. False if that device isn't waiting in this account.
+    pub fn set_grant(
+        &self,
+        id: &Id,
+        account: &Id,
+        grant: &[u8],
+        now: u64,
+    ) -> rusqlite::Result<bool> {
+        Ok(self.db.execute(
+            "UPDATE devices SET grant = ?3, approved_at = ?4
+             WHERE id = ?1 AND account = ?2 AND approved_at IS NULL AND revoked_at IS NULL",
+            params![&id[..], &account[..], grant, now as i64],
+        )? == 1)
+    }
+
+    pub fn grant(&self, id: &Id) -> rusqlite::Result<Option<Vec<u8>>> {
+        self.db
+            .query_row(
+                "SELECT grant FROM devices WHERE id = ?1",
+                params![&id[..]],
+                |row| row.get(0),
+            )
+            .optional()
+            .map(Option::flatten)
+    }
+
     pub fn device_records(&self, account: &Id) -> rusqlite::Result<Vec<Vec<u8>>> {
         let mut statement = self.db.prepare(
-            "SELECT record FROM devices WHERE account = ?1 AND revoked_at IS NULL AND record IS NOT NULL ORDER BY created_at",
+            "SELECT record FROM devices WHERE account = ?1 AND revoked_at IS NULL AND approved_at IS NOT NULL AND record IS NOT NULL ORDER BY created_at",
         )?;
         let rows = statement.query_map(params![&account[..]], |row| row.get(0))?;
         rows.collect()
@@ -422,6 +494,7 @@ mod tests {
             store.add_device(&[7; 16], &[3; 16], b"other", 0).unwrap(),
             Insert::Conflict
         ));
+        assert!(store.approve_if_first(&[7; 16], &[3; 16], 0).unwrap());
         store.set_device_record(&[7; 16], b"record").unwrap();
         assert_eq!(
             store.device_records(&[3; 16]).unwrap(),
@@ -455,6 +528,78 @@ mod tests {
             store.add_device(&[7; 16], &[3; 16], b"pub", 0).unwrap(),
             Insert::Conflict
         ));
+    }
+
+    #[test]
+    fn only_the_first_device_approves_itself() {
+        let mut store = store();
+        store
+            .create_account(&[3; 16], "seb", b"f", b"k", None, 0)
+            .unwrap();
+        store.add_device(&[7; 16], &[3; 16], b"first", 0).unwrap();
+        assert!(store.approve_if_first(&[7; 16], &[3; 16], 0).unwrap());
+        assert!(store.device(&[7; 16]).unwrap().unwrap().approved);
+
+        store.add_device(&[8; 16], &[3; 16], b"second", 10).unwrap();
+        assert!(!store.approve_if_first(&[8; 16], &[3; 16], 10).unwrap());
+        assert!(!store.device(&[8; 16]).unwrap().unwrap().approved);
+        assert_eq!(
+            store.pending_devices(&[3; 16], 20).unwrap(),
+            vec![b"second".to_vec()]
+        );
+
+        // A grant approves it, once, and only within its account.
+        assert!(!store.set_grant(&[8; 16], &[4; 16], b"grant", 30).unwrap());
+        assert!(store.set_grant(&[8; 16], &[3; 16], b"grant", 30).unwrap());
+        assert!(!store.set_grant(&[8; 16], &[3; 16], b"again", 31).unwrap());
+        assert!(store.device(&[8; 16]).unwrap().unwrap().approved);
+        assert_eq!(store.grant(&[8; 16]).unwrap(), Some(b"grant".to_vec()));
+        assert!(store.pending_devices(&[3; 16], 40).unwrap().is_empty());
+    }
+
+    #[test]
+    fn requests_nobody_approves_expire() {
+        let mut store = store();
+        store
+            .create_account(&[3; 16], "seb", b"f", b"k", None, 0)
+            .unwrap();
+        store.add_device(&[7; 16], &[3; 16], b"first", 0).unwrap();
+        store.approve_if_first(&[7; 16], &[3; 16], 0).unwrap();
+        store.add_device(&[8; 16], &[3; 16], b"late", 0).unwrap();
+        assert!(
+            store
+                .pending_devices(&[3; 16], PENDING_TTL_MS + 1)
+                .unwrap()
+                .is_empty()
+        );
+        assert!(store.device(&[8; 16]).unwrap().unwrap().revoked);
+    }
+
+    #[test]
+    fn devices_from_before_approval_stay_approved() {
+        let path = std::env::temp_dir().join(format!("pastazzo-store-{}.db", rand_suffix()));
+        {
+            let db = Connection::open(&path).unwrap();
+            db.execute_batch(
+                "CREATE TABLE accounts (id BLOB PRIMARY KEY, username TEXT NOT NULL UNIQUE, password_file BLOB NOT NULL,
+                     wrapped_key BLOB NOT NULL, created_at INTEGER NOT NULL);
+                 CREATE TABLE devices (id BLOB PRIMARY KEY, account BLOB NOT NULL, public BLOB NOT NULL, record BLOB,
+                     created_at INTEGER NOT NULL, revoked_at INTEGER);
+                 INSERT INTO accounts VALUES (x'03030303030303030303030303030303', 'seb', x'00', x'00', 0);
+                 INSERT INTO devices VALUES (x'07070707070707070707070707070707', x'03030303030303030303030303030303', x'01', x'02', 5, NULL);",
+            )
+            .unwrap();
+        }
+        let store = Store::open(&path).unwrap();
+        assert!(store.device(&[7; 16]).unwrap().unwrap().approved);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    fn rand_suffix() -> u128 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
     }
 
     #[test]

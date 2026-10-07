@@ -681,7 +681,17 @@ export default class PastazzoExtension extends Extension {
         const fresh = status && Date.now() - (status.updated || 0) < TRANSFER_STALE_MS;
         const text = fresh ? describeTransfers(status.transfers || []) : '';
         this._panel?.setTransfer(text);
-        this._showIndicator(text);
+
+        // A device waiting for approval: shown until someone approves or rejects it.
+        const approvals = this._readJson('approvals.json');
+        const waiting = approvals && Date.now() - (approvals.updated || 0) < TRANSFER_STALE_MS
+            ? approvals.pending || []
+            : [];
+        this._approvalsWaiting = waiting.length > 0;
+        const approvalText = waiting.length === 1
+            ? `New device waiting · ${waiting[0].code}`
+            : waiting.length > 1 ? `${waiting.length} new devices waiting` : '';
+        this._showIndicator([approvalText, text].filter(t => t).join('   '));
     }
 
     _showIndicator(text) {
@@ -703,7 +713,10 @@ export default class PastazzoExtension extends Extension {
             box.add_child(this._indicatorLabel);
             this._indicator.add_child(box);
             this._indicator.connect('button-press-event', () => {
-                this._panel?.showPanel();
+                if (this._approvalsWaiting)
+                    this.openPreferences();
+                else
+                    this._panel?.showPanel();
                 return Clutter.EVENT_STOP;
             });
             Main.panel.addToStatusArea('pastazzo-sync', this._indicator);

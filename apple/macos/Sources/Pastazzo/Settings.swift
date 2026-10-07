@@ -23,6 +23,14 @@ final class SettingsModel: ObservableObject {
         }
     }
 
+    func approve(_ device: SyncPending) {
+        run(["approve", device.id, "--yes"], success: "Device approved.")
+    }
+
+    func reject(_ device: SyncPending) {
+        run(["revoke", device.id], success: "Device rejected.")
+    }
+
     func remove(_ device: SyncDevice) {
         run(["revoke", device.id], success: device.isThisDevice ? "Logged out." : "\(device.name) removed.")
     }
@@ -126,6 +134,37 @@ struct SettingsView: View {
     @ViewBuilder
     private var syncSections: some View {
         if let status = model.status, status.loggedIn {
+            if let waiting = status.pendingDevices, !waiting.isEmpty {
+                section("Waiting for Approval") {
+                    Text(status.canApprove ?? false
+                        ? "A device logged in with your password and asks to join. Approve it only if it shows exactly the same code: the password alone doesn't let it in."
+                        : "This Mac's account was created before approvals existed, so it can't approve: create the account again to use them.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    ForEach(waiting) { device in
+                        HStack {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("New device")
+                                Text(device.code).font(.system(.title3, design: .monospaced)).textSelection(.enabled)
+                            }
+                            Spacer()
+                            Button("Reject") { model.reject(device) }.disabled(model.busy)
+                            if status.canApprove ?? false {
+                                Button("Approve…") {
+                                    confirmation = Confirmation(
+                                        title: "Approve this device?",
+                                        message: "Approve it only if the new device shows exactly this code:\n\n\(device.code)",
+                                        action: "Approve",
+                                        perform: { model.approve(device) }
+                                    )
+                                }
+                                .disabled(model.busy)
+                            }
+                        }
+                    }
+                }
+            }
             section("Account") {
                 row("Username", status.username ?? "")
                 row("Server", status.serverUrl ?? "")

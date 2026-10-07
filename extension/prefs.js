@@ -128,6 +128,34 @@ class SyncPage extends Adw.PreferencesPage {
         account.add(infoRow('Server', status.server_url));
         account.add(infoRow('This device', status.this_device.name));
 
+        const waiting = new Adw.PreferencesGroup({
+            title: 'Waiting for Approval',
+            description: status.can_approve
+                ? 'A device logged in with your password and asks to join. Approve it only if it shows ' +
+                  'exactly the same code: the password alone doesn\'t let it in.'
+                : 'This device\'s account was created before approvals existed, so it can\'t approve: ' +
+                  'create the account again to use them.',
+        });
+        for (const device of status.pending_devices || []) {
+            const row = new Adw.ActionRow({
+                title: 'New device',
+                subtitle: `Code <tt>${escape(device.code)}</tt>`,
+            });
+            const reject = new Gtk.Button({label: 'Reject', valign: Gtk.Align.CENTER, css_classes: ['flat']});
+            reject.connect('clicked', () => this._reject(device));
+            row.add_suffix(reject);
+            if (status.can_approve) {
+                const approve = new Gtk.Button({
+                    label: 'Approve…',
+                    valign: Gtk.Align.CENTER,
+                    css_classes: ['suggested-action'],
+                });
+                approve.connect('clicked', () => this._approve(device));
+                row.add_suffix(approve);
+            }
+            waiting.add(row);
+        }
+
         const devices = new Adw.PreferencesGroup({
             title: 'Devices',
             description: 'Devices syncing with this account. Each one shows its key fingerprint: ' +
@@ -167,7 +195,19 @@ class SyncPage extends Adw.PreferencesPage {
             'Empties the history here, on the server and on every other device as it syncs.',
             'Clear Everywhere', () => this._clear(true)));
 
-        this._setGroups([account, devices, keys, history]);
+        const refresh = new Gtk.Button({
+            icon_name: 'view-refresh-symbolic',
+            valign: Gtk.Align.CENTER,
+            tooltip_text: 'Refresh',
+            css_classes: ['flat'],
+        });
+        refresh.connect('clicked', () => this._refresh());
+        devices.set_header_suffix(refresh);
+
+        const groups = [account, devices, keys, history];
+        if ((status.pending_devices || []).length)
+            groups.unshift(waiting);
+        this._setGroups(groups);
     }
 
     _actionRow(title, subtitle, label, onClicked) {
@@ -193,6 +233,26 @@ class SyncPage extends Adw.PreferencesPage {
     _report(error, success) {
         this._window.add_toast(new Adw.Toast({title: error ? `Failed: ${error}` : success}));
         this._refresh();
+    }
+
+    _approve(device) {
+        const dialog = new Adw.AlertDialog({
+            heading: 'Approve this device?',
+            body: `Approve it only if the new device shows exactly this code:\n\n<tt><big>${escape(device.code)}</big></tt>`,
+            body_use_markup: true,
+        });
+        dialog.add_response('cancel', 'Cancel');
+        dialog.add_response('approve', 'Approve');
+        dialog.set_response_appearance('approve', Adw.ResponseAppearance.SUGGESTED);
+        dialog.connect('response', (_dialog, response) => {
+            if (response === 'approve')
+                runSync(['approve', device.id, '--yes'], error => this._report(error, 'Device approved'));
+        });
+        dialog.present(this._window);
+    }
+
+    _reject(device) {
+        runSync(['revoke', device.id], error => this._report(error, 'Device rejected'));
     }
 
     _removeDevice(device) {

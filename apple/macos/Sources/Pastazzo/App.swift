@@ -40,10 +40,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         self.inbox = inbox
         self.shelf = shelf
         statusItem = makeStatusItem()
-        // Transfers show next to the icon while they last.
+        // Transfers, and devices waiting for approval, show next to the icon.
         sync.$transferShort
+            .combineLatest(sync.$waitingDevices)
             .receive(on: RunLoop.main)
-            .sink { [weak self] text in self?.statusItem?.button?.title = text.map { " \($0)" } ?? "" }
+            .sink { [weak self] transfer, waiting in
+                let parts = [waiting > 0 ? "New device" : nil, transfer].compactMap { $0 }
+                self?.statusItem?.button?.title = parts.isEmpty ? "" : " " + parts.joined(separator: "  ")
+            }
             .store(in: &subscriptions)
     }
 
@@ -72,6 +76,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             statusItem?.menu = menu
             statusItem?.button?.performClick(nil)
             statusItem?.menu = nil
+        } else if sync?.waitingDevices ?? 0 > 0 {
+            // Someone is waiting: that's what the click is for.
+            settings?.show()
         } else {
             shelf?.toggle()
         }

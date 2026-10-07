@@ -8,6 +8,7 @@
 
 pub mod account;
 pub mod api;
+pub mod approval;
 pub mod device;
 mod error;
 pub mod invite;

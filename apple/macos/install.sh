@@ -11,11 +11,29 @@ BIN="$HOME/.local/bin"
 AGENTS="$HOME/Library/LaunchAgents"
 APP=/Applications/Pastazzo.app
 DOMAIN="gui/$(id -u)"
+IDENTITY="${PASTAZZO_SIGN_IDENTITY:-Pastazzo Local Signing}"
+
+# Signs with the local certificate from signing.sh when there is one, so the
+# keychain and Accessibility keep trusting pastazzo across updates; otherwise
+# ad hoc, which they forget at every build. Signing needs the login keychain:
+# run this from the Mac itself, not over SSH.
+sign() {
+    if security find-identity -v -p codesigning | grep -q "\"$IDENTITY\""; then
+        codesign --force --sign "$IDENTITY" "$@"
+    else
+        codesign --force --sign - "$@"
+    fi
+}
+if ! security find-identity -v -p codesigning | grep -q "\"$IDENTITY\""; then
+    echo "no \"$IDENTITY\" certificate: signing ad hoc (run apple/macos/signing.sh once to fix that)"
+fi
 
 echo "building the pastazzo CLIs"
 cargo build --release --manifest-path "$ROOT/Cargo.toml" -p pastazzo -p pastazzo-sync
 mkdir -p "$BIN"
 install -m 0755 "$ROOT/target/release/pastazzo" "$ROOT/target/release/pastazzo-sync" "$BIN/"
+sign --identifier org.pastazzo.cli "$BIN/pastazzo"
+sign --identifier org.pastazzo.sync "$BIN/pastazzo-sync"
 
 echo "building Pastazzo.app"
 BUILD="$MACOS/build/Pastazzo.app"
@@ -25,7 +43,7 @@ mkdir -p "$BUILD/Contents/MacOS"
 swiftc -O -target "$(uname -m)-apple-macos12.0" -sdk "$(xcrun --show-sdk-path)" -framework Carbon \
     -o "$BUILD/Contents/MacOS/Pastazzo" "$MACOS"/Sources/Pastazzo/*.swift
 cp "$MACOS/Info.plist" "$BUILD/Contents/Info.plist"
-codesign --force --sign - "$BUILD"
+sign "$BUILD"
 
 # Stop what's running before replacing it.
 launchctl bootout "$DOMAIN/org.pastazzo.app" 2>/dev/null || true

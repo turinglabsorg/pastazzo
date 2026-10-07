@@ -9,6 +9,8 @@ final class SyncMonitor: ObservableObject {
     /// Just the percentage, for the menu bar.
     @Published private(set) var transferShort: String?
     @Published private(set) var localDevice = ""
+    /// Devices that logged in and wait for approval.
+    @Published private(set) var waitingDevices = 0
 
     private let directory: URL
     private var timer: Timer?
@@ -29,6 +31,16 @@ final class SyncMonitor: ObservableObject {
 
     private struct Info: Decodable {
         let deviceName: String
+    }
+
+    private struct Approvals: Decodable {
+        struct Waiting: Decodable {
+            let id: String
+            let code: String
+        }
+
+        let updated: Double
+        let pending: [Waiting]
     }
 
     private struct Transfers: Decodable {
@@ -71,6 +83,14 @@ final class SyncMonitor: ObservableObject {
         if short != transferShort {
             transferShort = short
         }
+        var waiting = 0
+        if let approvals = decode(Approvals.self, "approvals.json"),
+           Date().timeIntervalSince1970 - approvals.updated / 1000 < Self.staleAfter {
+            waiting = approvals.pending.count
+        }
+        if waiting != waitingDevices {
+            waitingDevices = waiting
+        }
     }
 
     static func describe(_ transfer: Transfer) -> String {
@@ -90,7 +110,15 @@ struct SyncStatus: Decodable {
     let accountKeyFingerprint: String?
     let thisDevice: SyncDevice?
     let devices: [SyncDevice]?
+    let pendingDevices: [SyncPending]?
+    let canApprove: Bool?
     let devicesError: String?
+}
+
+/// A device waiting for approval.
+struct SyncPending: Decodable, Identifiable, Equatable {
+    let id: String
+    let code: String
 }
 
 struct SyncDevice: Decodable, Identifiable, Equatable {
@@ -114,7 +142,7 @@ final class SyncClient {
             let status = output.flatMap { try? decoder.decode(SyncStatus.self, from: $0) }
                 ?? SyncStatus(loggedIn: false, error: error ?? "unexpected answer from pastazzo-sync", serverUrl: nil,
                               username: nil, serverFingerprint: nil, accountKeyFingerprint: nil, thisDevice: nil,
-                              devices: nil, devicesError: nil)
+                              devices: nil, pendingDevices: nil, canApprove: nil, devicesError: nil)
             completion(status)
         }
     }

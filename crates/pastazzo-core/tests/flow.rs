@@ -1,7 +1,8 @@
 //! The whole protocol end to end, the way the server and clients will run
 //! it, plus a relay in the middle trying to tamper with every step.
 
-use pastazzo_core::account::{AccountKey, WrappedAccountKey};
+use pastazzo_core::account::{AccountKey, AccountSecret, WrappedAccountKey};
+use pastazzo_core::approval;
 use pastazzo_core::device::{DeviceKeys, SealedDeviceRecord};
 use pastazzo_core::invite::{Invite, InviteKey, InviteVerifier};
 use pastazzo_core::item::{Content, ItemHeader, SealedItem};
@@ -22,6 +23,9 @@ struct Stored {
     account: Id,
     password_file: Vec<u8>,
     wrapped: WrappedAccountKey,
+    /// Not the server's: what the first device keeps, and hands to the
+    /// devices it approves.
+    secret: AccountSecret,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -65,12 +69,19 @@ fn register(
     // account key, seal the record.
     let result = state.finish(&mut OsRng, PASSWORD, &response, &identity)?;
     let account_key = AccountKey::generate(&mut OsRng);
+    let secret = AccountSecret::generate(&mut OsRng);
     let account = random_id(&mut OsRng);
     let record = RegistrationRecord {
         username: "seb".into(),
         account,
         upload: result.upload,
-        wrapped: WrappedAccountKey::wrap(&account_key, &result.export_key, &account, &mut OsRng),
+        wrapped: WrappedAccountKey::wrap(
+            &account_key,
+            &result.export_key,
+            &secret,
+            &account,
+            &mut OsRng,
+        ),
     };
     let mut sealed = record.seal(&identity, &mut OsRng);
     let finish_proof = invite.key.finish_proof("seb", &sealed);
@@ -89,6 +100,7 @@ fn register(
             wrapped: WrappedAccountKey::wrap(
                 &AccountKey::generate(&mut OsRng),
                 &ours.export_key,
+                &AccountSecret::generate(&mut OsRng),
                 &account,
                 &mut OsRng,
             ),
@@ -105,6 +117,7 @@ fn register(
         account: record.account,
         password_file: opaque::server_registration_finish(&record.upload)?,
         wrapped: record.wrapped,
+        secret,
     })
 }
 
@@ -150,6 +163,7 @@ fn login(
         wrapped = WrappedAccountKey::wrap(
             &AccountKey::generate(&mut OsRng),
             &[0; 64],
+            &AccountSecret::generate(&mut OsRng),
             &stored.account,
             &mut OsRng,
         );
@@ -157,7 +171,15 @@ fn login(
 
     // Client: check the answer and unwrap the account key.
     session::verify_login_response(&session_key, "seb", &stored.account, &wrapped, &tag)?;
-    wrapped.unwrap(&export_key, &stored.account)
+    // An existing device approves this one: the account secret, sealed to it.
+    let grant = approval::seal_grant(
+        &stored.secret,
+        &stored.account,
+        &device.public(),
+        &mut OsRng,
+    );
+    let secret = approval::open_grant(device, &stored.account, &grant)?;
+    wrapped.unwrap(&export_key, &secret, &stored.account)
 }
 
 /// An invite as the admin CLI makes it: the link for the user, the verifier
@@ -309,8 +331,58 @@ fn stolen_wrapped_key_is_useless_without_the_password() {
     // Without the password there is no export key to unwrap with.
     for guess in [[0u8; 64], [1u8; 64]] {
         assert_eq!(
-            stored.wrapped.unwrap(&guess, &stored.account).err(),
+            stored
+                .wrapped
+                .unwrap(&guess, &stored.secret, &stored.account)
+                .err(),
             Some(Error::Decrypt)
         );
     }
+}
+
+#[test]
+fn the_password_without_an_approval_opens_nothing() {
+    let server = ServerKeys::generate(&mut OsRng);
+    let stored = registered(&server);
+    // Someone with the password logs in fine, and gets the wrapped key...
+    let (request, client) = opaque::client_login_start(&mut OsRng, PASSWORD).unwrap();
+    let (response, _) = opaque::server_login_start(
+        &mut OsRng,
+        &server,
+        Some(&stored.password_file),
+        &request,
+        "seb",
+    )
+    .unwrap();
+    let login = client
+        .finish(&mut OsRng, PASSWORD, &response, &server.identity())
+        .unwrap();
+    // ...but without the account secret it doesn't open.
+    for guess in [
+        AccountSecret::generate(&mut OsRng),
+        AccountSecret::from_bytes([0; 32]),
+    ] {
+        assert_eq!(
+            stored
+                .wrapped
+                .unwrap(&login.export_key, &guess, &stored.account)
+                .err(),
+            Some(Error::Decrypt)
+        );
+    }
+}
+
+#[test]
+fn a_grant_sealed_to_keys_the_server_slipped_in_is_caught_by_the_code() {
+    let device = DeviceKeys::generate(&mut OsRng);
+    let impostor = DeviceKeys::generate(&mut OsRng);
+    let mut swapped = device.public();
+    swapped.signing = impostor.public().signing;
+    swapped.exchange = impostor.public().exchange;
+    // The approving device would be shown the impostor's keys under the new
+    // device's id: the code on its screen isn't the one on the new device's.
+    assert_ne!(
+        approval::approval_code(&swapped),
+        approval::approval_code(&device.public())
+    );
 }

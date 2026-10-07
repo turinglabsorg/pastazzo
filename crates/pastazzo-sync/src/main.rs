@@ -7,6 +7,7 @@
 //! pastazzo-sync send <text>
 //! pastazzo-sync status [--json]
 //! pastazzo-sync devices
+//! pastazzo-sync approve [<device id>] [--yes]
 //! pastazzo-sync revoke <device id>
 //! pastazzo-sync clear [--everywhere]
 //! pastazzo-sync logout
@@ -32,6 +33,7 @@ const USAGE: &str = "usage:
   pastazzo-sync send <text>
   pastazzo-sync status [--json]
   pastazzo-sync devices
+  pastazzo-sync approve [<device id>] [--yes]
   pastazzo-sync revoke <device id>
   pastazzo-sync clear [--everywhere]
   pastazzo-sync logout
@@ -39,7 +41,7 @@ const USAGE: &str = "usage:
 join and login read the password from the terminal, or from --password-file <file>";
 
 /// Options that take no value.
-const FLAGS: &[&str] = &["--json", "--everywhere"];
+const FLAGS: &[&str] = &["--json", "--everywhere", "--yes"];
 
 /// Passwords for new accounts must be at least this long.
 const MIN_PASSWORD_CHARS: usize = 12;
@@ -178,9 +180,24 @@ fn run() -> Result<()> {
                 args.required("username")?,
                 &password,
                 &args.device_name(),
+                &mut |code| {
+                    println!(
+                        "password accepted: now approve this device from one already in the account"
+                    );
+                    println!(
+                        "(GNOME: Settings → Sync; Mac: Pastazzo → Settings; or `pastazzo-sync approve` there)."
+                    );
+                    println!();
+                    println!("    approval code: {code}");
+                    println!();
+                    println!("Approve only if that device shows exactly this code. Waiting…");
+                },
             )?;
             state.save_new(&path)?;
-            println!("logged in as {} on {}", state.username, state.server_url);
+            println!(
+                "approved: logged in as {} on {}",
+                state.username, state.server_url
+            );
             Ok(())
         }
         "run" => daemon::Daemon::new(State::load(&path)?, &path, clipboard::platform()?)
@@ -235,9 +252,57 @@ fn run() -> Result<()> {
         }
         "devices" => {
             let state = State::load(&path)?;
-            for (name, this) in account::device_names(&state)? {
-                println!("{name}{}", if this { "  (this device)" } else { "" });
+            let (devices, pending) = account::devices_and_pending(&state)?;
+            for device in devices {
+                println!(
+                    "{}{}",
+                    device.name,
+                    if device.this { "  (this device)" } else { "" }
+                );
             }
+            for waiting in pending {
+                println!(
+                    "waiting for approval: code {}  (pastazzo-sync approve {})",
+                    waiting.code,
+                    B64::encode(&waiting.public.id)
+                );
+            }
+            Ok(())
+        }
+        "approve" => {
+            let state = State::load(&path)?;
+            let Some(id) = args.positional.first() else {
+                let (_, pending) = account::devices_and_pending(&state)?;
+                if pending.is_empty() {
+                    println!("no device is waiting for approval");
+                }
+                for waiting in pending {
+                    println!("{}  code {}", B64::encode(&waiting.public.id), waiting.code);
+                }
+                return Ok(());
+            };
+            let id: Id = B64::decode(id)
+                .and_then(|id| id.try_into().ok())
+                .ok_or("that isn't a device id: run `pastazzo-sync approve` to list them")?;
+            if args.option("yes").is_none() {
+                let (_, pending) = account::devices_and_pending(&state)?;
+                let waiting = pending
+                    .iter()
+                    .find(|p| p.public.id == id)
+                    .ok_or("no device with that id is waiting for approval")?;
+                println!("The new device must show the code {}.", waiting.code);
+                print!("Does it? Type yes to approve it: ");
+                std::io::Write::flush(&mut std::io::stdout()).map_err(|e| e.to_string())?;
+                let mut answer = String::new();
+                std::io::stdin()
+                    .read_line(&mut answer)
+                    .map_err(|e| e.to_string())?;
+                if answer.trim() != "yes" {
+                    return Err("not approved".to_owned());
+                }
+            }
+            let approved = account::approve(&state, &id)?;
+            println!("approved the device showing {}", approved.code);
             Ok(())
         }
         "revoke" => {
@@ -333,9 +398,9 @@ fn status_json(path: &std::path::Path) -> String {
         Ok(state) => state,
         Err(error) => return json!({ "logged_in": false, "error": error }).to_string(),
     };
-    let (devices, devices_error) = match account::devices(&state) {
-        Ok(devices) => (devices, None),
-        Err(error) => (Vec::new(), Some(error)),
+    let (devices, pending, devices_error) = match account::devices_and_pending(&state) {
+        Ok((devices, pending)) => (devices, pending, None),
+        Err(error) => (Vec::new(), Vec::new(), Some(error)),
     };
     json!({
         "logged_in": true,
@@ -356,6 +421,11 @@ fn status_json(path: &std::path::Path) -> String {
             "fingerprint": display_fingerprint(&device.fingerprint),
             "this": device.this,
         })).collect::<Vec<_>>(),
+        "pending_devices": pending.iter().map(|waiting| json!({
+            "id": B64::encode(&waiting.public.id),
+            "code": waiting.code,
+        })).collect::<Vec<_>>(),
+        "can_approve": state.account_secret.is_some(),
         "devices_error": devices_error,
     })
     .to_string()

@@ -7,7 +7,8 @@ use pastazzo_core::Id;
 use pastazzo_core::api::{
     self, B64, DeviceRecords, ErrorBody, ItemAnnounce, ItemPosted, ItemsPage, ServerInfo,
 };
-use pastazzo_core::request::RequestSignature;
+use pastazzo_core::device::DeviceKeys;
+use pastazzo_core::request::{RequestSignature, Scope};
 use rand::rngs::OsRng;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -98,15 +99,18 @@ impl Remote {
         path: &str,
         body: &[u8],
     ) -> [(&'static str, String); 4] {
-        let signature = RequestSignature::sign(
-            &state.device,
-            &state.scope(),
-            method,
-            path,
-            body,
-            now(),
-            &mut OsRng,
-        );
+        Self::headers_for(&state.device, &state.scope(), method, path, body)
+    }
+
+    fn headers_for(
+        device: &DeviceKeys,
+        scope: &Scope,
+        method: &str,
+        path: &str,
+        body: &[u8],
+    ) -> [(&'static str, String); 4] {
+        let signature =
+            RequestSignature::sign(device, scope, method, path, body, now(), &mut OsRng);
         [
             (api::HEADER_DEVICE, B64::encode(&signature.device)),
             (api::HEADER_TIMESTAMP, signature.timestamp.to_string()),
@@ -281,8 +285,47 @@ impl Remote {
     }
 
     pub fn device_records(&self, state: &State) -> Result<Vec<Vec<u8>>> {
-        let records: DeviceRecords = Self::check(self.signed_get(state, "/v1/devices")?)?;
-        Ok(records.records.into_iter().map(|r| r.0).collect())
+        Ok(self
+            .devices(state)?
+            .records
+            .into_iter()
+            .map(|r| r.0)
+            .collect())
+    }
+
+    /// The account's device records, and the devices waiting for approval.
+    pub fn devices(&self, state: &State) -> Result<DeviceRecords> {
+        Self::check(self.signed_get(state, "/v1/devices")?)
+    }
+
+    /// Hands a waiting device its grant, which approves it.
+    pub fn put_grant(&self, state: &State, device: &Id, grant: &[u8]) -> Result<()> {
+        let path = format!("/v1/devices/{}/grant", B64::encode(device));
+        Self::check_empty(self.signed_send(state, "PUT", &path, grant)?)
+    }
+
+    /// For a device waiting for approval: its grant, once someone approved it.
+    pub fn grant(&self, device: &DeviceKeys, scope: &Scope) -> Result<Option<Vec<u8>>> {
+        let path = format!("/v1/devices/{}/grant", B64::encode(&device.id()));
+        let mut request = self.agent.get(format!("{}{path}", self.base));
+        for (name, value) in Self::headers_for(device, scope, "GET", &path, b"") {
+            request = request.header(name, value);
+        }
+        let mut response = request
+            .call()
+            .map_err(|e| format!("can't reach {}: {e}", self.base))?;
+        match response.status().as_u16() {
+            200 => Ok(Some(
+                response
+                    .body_mut()
+                    .with_config()
+                    .limit(4096)
+                    .read_to_vec()
+                    .map_err(|e| e.to_string())?,
+            )),
+            404 => Ok(None),
+            _ => Self::check_empty(response).map(|()| None),
+        }
     }
 
     pub fn revoke_device(&self, state: &State, device: &[u8; 16]) -> Result<()> {

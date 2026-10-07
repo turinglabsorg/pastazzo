@@ -4,7 +4,9 @@
 //!
 //! - `status.json`: this device, its account and server;
 //! - `transfers.json`: uploads and downloads in progress, for a progress
-//!   indicator on both sides of a transfer.
+//!   indicator on both sides of a transfer;
+//! - `approvals.json`: devices waiting for this one, or another, to approve
+//!   them.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs;
@@ -40,6 +42,8 @@ const ANNOUNCE_BYTES: usize = 64 * 1024;
 const NAMES_REFRESH: Duration = Duration::from_secs(30);
 /// `transfers.json` is rewritten at most this often while things move.
 const STATUS_INTERVAL: Duration = Duration::from_millis(150);
+/// How often devices waiting for approval are looked for.
+const APPROVALS_INTERVAL: Duration = Duration::from_secs(10);
 
 /// A content hash, local to this device: never sent anywhere.
 pub fn fingerprint(content: &Content) -> [u8; 32] {
@@ -188,6 +192,7 @@ pub struct Daemon {
     names: Arc<Mutex<Names>>,
     /// The device whose upload was last seen coming, for labelling the download.
     last_sender: Arc<Mutex<String>>,
+    approvals_checked: Arc<Mutex<Option<Instant>>>,
 }
 
 impl Daemon {
@@ -203,6 +208,7 @@ impl Daemon {
             status: Arc::default(),
             names: Arc::default(),
             last_sender: Arc::default(),
+            approvals_checked: Arc::default(),
         }
     }
 
@@ -337,10 +343,61 @@ impl Daemon {
         result.map(|_| ())
     }
 
+    /// Writes `approvals.json` with the devices waiting for approval, so the
+    /// UIs can tell, every [`APPROVALS_INTERVAL`] at most.
+    fn check_approvals(&self) {
+        let dir = {
+            let status = self.status.lock().unwrap();
+            match &status.dir {
+                Some(dir) => dir.clone(),
+                None => return,
+            }
+        };
+        {
+            let mut checked = self.approvals_checked.lock().unwrap();
+            if checked.is_some_and(|at| at.elapsed() < APPROVALS_INTERVAL) {
+                return;
+            }
+            *checked = Some(Instant::now());
+        }
+        #[derive(Serialize)]
+        struct Waiting {
+            id: String,
+            code: String,
+        }
+        #[derive(Serialize)]
+        struct File {
+            updated: u64,
+            can_approve: bool,
+            pending: Vec<Waiting>,
+        }
+        match account::devices_and_pending(&self.state) {
+            Ok((_, pending)) => {
+                let file = File {
+                    updated: now(),
+                    can_approve: self.state.account_secret.is_some(),
+                    pending: pending
+                        .into_iter()
+                        .map(|p| Waiting {
+                            id: B64::encode(&p.public.id),
+                            code: p.code,
+                        })
+                        .collect(),
+                };
+                if let Err(error) = write_json(&dir, "approvals.json", &file) {
+                    log!("couldn't write the approvals status: {error}");
+                }
+            }
+            Err(error) => log!("couldn't check for devices waiting for approval: {error}"),
+        }
+    }
+
     fn receive_forever(self) {
         let mut backoff = Duration::from_secs(1);
         loop {
-            match self.receive_once(api::MAX_WAIT_SECONDS - 5) {
+            self.check_approvals();
+            // Short waits while a device may come asking, so it's seen quickly.
+            match self.receive_once(APPROVALS_INTERVAL.as_secs().min(api::MAX_WAIT_SECONDS - 5)) {
                 Ok(()) => backoff = Duration::from_secs(1),
                 Err(error) => {
                     log!("{error}; retrying in {}s", backoff.as_secs());

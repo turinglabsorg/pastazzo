@@ -4,7 +4,7 @@
 use rand::SeedableRng;
 use sha2::{Digest, Sha256};
 
-use crate::account::{AccountKey, WrappedAccountKey};
+use crate::account::{AccountKey, AccountSecret, WrappedAccountKey};
 use crate::device::DeviceKeys;
 use crate::invite::InviteKey;
 use crate::item::{Content, ItemHeader, SealedItem};
@@ -89,7 +89,13 @@ fn vectors() -> Vec<(&'static str, String)> {
         seq(0xb0),
     )
     .to_bytes();
-    let wrapped = WrappedAccountKey::wrap_with_nonce(&key, &seq::<64>(0x40), &account, seq(0xc0));
+    let wrapped = WrappedAccountKey::wrap_with_nonce(
+        &key,
+        &seq::<64>(0x40),
+        &AccountSecret::from_bytes(seq(0x70)),
+        &account,
+        seq(0xc0),
+    );
     let device = device_keys();
     let scope = Scope {
         server_fingerprint: seq(0x90),
@@ -151,6 +157,10 @@ fn vectors() -> Vec<(&'static str, String)> {
         ("server fingerprint", hex(&server.fingerprint())),
         ("account key fingerprint", hex(&key.fingerprint())),
         ("device fingerprint", hex(&device.public().fingerprint())),
+        (
+            "approval code",
+            crate::approval::approval_code(&device.public()),
+        ),
     ];
     vectors.extend(opaque_vectors());
     vectors
@@ -167,7 +177,7 @@ const EXPECTED: &[(&str, &str)] = &[
     ),
     (
         "wrapped account key",
-        "00000001c0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d2264b7da1ab3d562d2e36493053de88c792b4a9473fc6a2681caf8c7f82a0cba48f97894fe23911cf080a2c9a90c2fc",
+        "00000001c0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d727fad6fee9f14bfba715bcddc302c0038ccd76d6b29e5e44b991a40148a7d3471f30ef4d39c97d8d86d56d1a066dc95e",
     ),
     ("sealed item length", "341"),
     (
@@ -204,7 +214,7 @@ const EXPECTED: &[(&str, &str)] = &[
     ),
     (
         "login response tag",
-        "cf8ea8ebbe3c33ab88a5c0448365e868032fb30ad34703c4c1294b911e613eb7",
+        "45150e97f4c3a2fefd47c3a3c23c68a7730183f068bc5799e30aaf51cf4e3d87",
     ),
     (
         "server fingerprint",
@@ -218,6 +228,7 @@ const EXPECTED: &[(&str, &str)] = &[
         "device fingerprint",
         "4a4e0279a9f5c72f651881210fad3c1bb987a210771c5f59ce4baa19b382e0d7",
     ),
+    ("approval code", "4A4E 0279 A9F5 C72F"),
     (
         "opaque server fingerprint",
         "e89a3768d5bde88ae9e5cda6b0e8104f2306d92aeed356e261cbd54404d8a26a",

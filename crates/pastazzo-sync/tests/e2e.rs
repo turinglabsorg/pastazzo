@@ -107,6 +107,31 @@ impl Clipboard for FakeClipboard {
     }
 }
 
+/// Logs a device in the way the CLI does, with `approver` approving it once
+/// it waits, after checking both show the same code.
+fn login_approved(url: &str, fingerprint: &[u8; 32], approver: &State, name: &str) -> State {
+    let (url, fingerprint, name) = (url.to_owned(), *fingerprint, name.to_owned());
+    let (code_tx, code_rx) = std::sync::mpsc::channel();
+    let waiting = std::thread::spawn(move || {
+        account::login(&url, &fingerprint, "seb", PASSWORD, &name, &mut |code| {
+            code_tx.send(code.to_owned()).unwrap();
+        })
+    });
+    let code = code_rx
+        .recv_timeout(std::time::Duration::from_secs(20))
+        .unwrap();
+    let pending = loop {
+        let (_, pending) = account::devices_and_pending(approver).unwrap();
+        if !pending.is_empty() {
+            break pending;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    };
+    assert_eq!(pending[0].code, code, "both devices show the same code");
+    account::approve(approver, &pending[0].public.id).unwrap();
+    waiting.join().unwrap().unwrap()
+}
+
 fn temp_state(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("pastazzo-e2e-{}-{name}", rand::random::<u64>()));
     std::fs::create_dir_all(&dir).unwrap();
@@ -136,7 +161,7 @@ fn two_devices_sync_both_ways() {
     let mac_path = temp_state("mac");
 
     let laptop = account::join(&links[0], "seb", PASSWORD, "laptop").unwrap();
-    let mac = account::login(&url, &fingerprint, "seb", PASSWORD, "Mac Pro").unwrap();
+    let mac = login_approved(&url, &fingerprint, &laptop, "Mac Pro");
     assert_eq!(
         laptop.account_key.expose_secret(),
         mac.account_key.expose_secret()
@@ -199,9 +224,16 @@ fn two_devices_sync_both_ways() {
 fn wrong_password_and_reused_invite_are_refused() {
     let (url, fingerprint, links) = start_server(1);
     account::join(&links[0], "seb", PASSWORD, "laptop").unwrap();
-    let error = account::login(&url, &fingerprint, "seb", "not the password", "x")
-        .err()
-        .unwrap();
+    let error = account::login(
+        &url,
+        &fingerprint,
+        "seb",
+        "not the password",
+        "x",
+        &mut |_| {},
+    )
+    .err()
+    .unwrap();
     assert!(error.contains("wrong username or password"), "{error}");
     let error = account::join(&links[0], "other", PASSWORD, "x")
         .err()
@@ -213,7 +245,7 @@ fn wrong_password_and_reused_invite_are_refused() {
 fn a_pinned_fingerprint_that_doesnt_match_stops_the_client() {
     let (url, _, links) = start_server(1);
     account::join(&links[0], "seb", PASSWORD, "laptop").unwrap();
-    let error = account::login(&url, &[7; 32], "seb", PASSWORD, "x")
+    let error = account::login(&url, &[7; 32], "seb", PASSWORD, "x", &mut |_| {})
         .err()
         .unwrap();
     assert!(error.contains("fingerprint"), "{error}");
@@ -223,7 +255,7 @@ fn a_pinned_fingerprint_that_doesnt_match_stops_the_client() {
 fn revoked_devices_are_locked_out() {
     let (url, fingerprint, links) = start_server(1);
     let laptop = account::join(&links[0], "seb", PASSWORD, "laptop").unwrap();
-    let phone = account::login(&url, &fingerprint, "seb", PASSWORD, "phone").unwrap();
+    let phone = login_approved(&url, &fingerprint, &laptop, "phone");
     Remote::new(&url)
         .revoke_device(&laptop, &phone.device.id())
         .unwrap();
@@ -248,7 +280,7 @@ fn noise(len: usize) -> Vec<u8> {
 fn big_items_are_announced_and_show_up_as_pending() {
     let (url, fingerprint, links) = start_server(1);
     let laptop = account::join(&links[0], "seb", PASSWORD, "laptop").unwrap();
-    let mac = account::login(&url, &fingerprint, "seb", PASSWORD, "Mac Pro").unwrap();
+    let mac = login_approved(&url, &fingerprint, &laptop, "Mac Pro");
     let remote = Remote::new(&url);
 
     // The Mac is waiting; the laptop announces an upload: the wait ends at
@@ -293,7 +325,7 @@ fn big_items_are_announced_and_show_up_as_pending() {
 fn clearing_everywhere_empties_the_server_and_reaches_the_other_devices() {
     let (url, fingerprint, links) = start_server(1);
     let laptop = account::join(&links[0], "seb", PASSWORD, "laptop").unwrap();
-    let mac = account::login(&url, &fingerprint, "seb", PASSWORD, "Mac Pro").unwrap();
+    let mac = login_approved(&url, &fingerprint, &laptop, "Mac Pro");
     let laptop_path = temp_state("clear-laptop");
     let mac_path = temp_state("clear-mac");
     let (laptop, _) = device(laptop, &laptop_path, false);
@@ -318,7 +350,7 @@ fn clearing_everywhere_empties_the_server_and_reaches_the_other_devices() {
 fn every_device_shows_the_same_account_key_fingerprint() {
     let (url, fingerprint, links) = start_server(1);
     let laptop = account::join(&links[0], "seb", PASSWORD, "laptop").unwrap();
-    let mac = account::login(&url, &fingerprint, "seb", PASSWORD, "Mac Pro").unwrap();
+    let mac = login_approved(&url, &fingerprint, &laptop, "Mac Pro");
     assert_eq!(
         laptop.account_key.fingerprint(),
         mac.account_key.fingerprint()
@@ -344,7 +376,7 @@ fn every_device_shows_the_same_account_key_fingerprint() {
 fn devices_dont_download_their_own_items() {
     let (url, fingerprint, links) = start_server(1);
     let laptop = account::join(&links[0], "seb", PASSWORD, "laptop").unwrap();
-    let mac = account::login(&url, &fingerprint, "seb", PASSWORD, "Mac Pro").unwrap();
+    let mac = login_approved(&url, &fingerprint, &laptop, "Mac Pro");
     let laptop_path = temp_state("own-laptop");
     let (laptop_daemon, _) = device(laptop, &laptop_path, false);
     laptop_daemon.send(&Content::Text("mine".into())).unwrap();
@@ -374,4 +406,90 @@ fn public_endpoints_refuse_big_bodies() {
         .send(big.as_bytes())
         .unwrap();
     assert_eq!(response.status().as_u16(), 413);
+}
+
+#[test]
+fn a_device_waiting_for_approval_gets_nothing() {
+    let (url, fingerprint, links) = start_server(1);
+    let laptop = account::join(&links[0], "seb", PASSWORD, "laptop").unwrap();
+    let laptop_path = temp_state("waiting-laptop");
+    let (laptop_daemon, _) = device(laptop, &laptop_path, false);
+    laptop_daemon
+        .send(&Content::Text("private".into()))
+        .unwrap();
+    let laptop = State::load_with(&laptop_path, &NoKeychain).unwrap();
+
+    // Someone with the password logs in from another device and waits...
+    let (url2, name) = (url.clone(), "stranger".to_owned());
+    std::thread::spawn(move || {
+        account::login(&url2, &fingerprint, "seb", PASSWORD, &name, &mut |_| {})
+    });
+    let pending = loop {
+        let (_, pending) = account::devices_and_pending(&laptop).unwrap();
+        if !pending.is_empty() {
+            break pending;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    };
+    // ...and isn't listed as a device of the account: just as waiting.
+    let names: Vec<String> = account::device_names(&laptop)
+        .unwrap()
+        .into_iter()
+        .map(|(n, _)| n)
+        .collect();
+    assert_eq!(names, ["laptop"]);
+    assert_eq!(pending.len(), 1);
+
+    // Rejecting it: its wait ends with an error, and it never had the key.
+    Remote::new(&url)
+        .revoke_device(&laptop, &pending[0].public.id)
+        .unwrap();
+}
+
+#[test]
+fn a_rejected_device_stops_waiting() {
+    let (url, fingerprint, links) = start_server(1);
+    let laptop = account::join(&links[0], "seb", PASSWORD, "laptop").unwrap();
+    let url2 = url.clone();
+    let waiting = std::thread::spawn(move || {
+        account::login(
+            &url2,
+            &fingerprint,
+            "seb",
+            PASSWORD,
+            "stranger",
+            &mut |_| {},
+        )
+    });
+    let pending = loop {
+        let (_, pending) = account::devices_and_pending(&laptop).unwrap();
+        if !pending.is_empty() {
+            break pending;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    };
+    Remote::new(&url)
+        .revoke_device(&laptop, &pending[0].public.id)
+        .unwrap();
+    let error = waiting.join().unwrap().err().unwrap();
+    assert!(error.contains("revoked"), "{error}");
+}
+
+#[test]
+fn only_approved_devices_can_approve() {
+    let (url, fingerprint, links) = start_server(1);
+    let laptop = account::join(&links[0], "seb", PASSWORD, "laptop").unwrap();
+    let mac = login_approved(&url, &fingerprint, &laptop, "Mac Pro");
+    // The Mac, approved, can approve a third device in turn.
+    let phone = login_approved(&url, &fingerprint, &mac, "phone");
+    assert_eq!(
+        phone.account_key.fingerprint(),
+        laptop.account_key.fingerprint()
+    );
+    let names: Vec<String> = account::device_names(&phone)
+        .unwrap()
+        .into_iter()
+        .map(|(n, _)| n)
+        .collect();
+    assert_eq!(names, ["laptop", "Mac Pro", "phone"]);
 }
