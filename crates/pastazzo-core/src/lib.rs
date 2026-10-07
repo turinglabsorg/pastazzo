@@ -7,6 +7,7 @@
 //! wire format.
 
 pub mod account;
+pub mod api;
 pub mod device;
 mod error;
 pub mod invite;

@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/pastazzo", "crates/pastazzo-core"]
+members = ["crates/pastazzo", "crates/pastazzo-core", "crates/pastazzo-server", "crates/pastazzo-sync"]
 default-members = ["crates/pastazzo"]
 
 [workspace.package]

@@ -1,0 +1,19 @@
+[package]
+name = "pastazzo-server"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Self-hostable pastazzo sync server: stores and relays end-to-end encrypted clipboard items it can't read"
+
+[dependencies]
+pastazzo-core = { path = "../pastazzo-core" }
+axum = "0.8"
+base64 = "0.22"
+rand = "0.8"
+rusqlite = { version = "0.40", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "sync", "time", "signal"] }
+zeroize = "1.8"
+
