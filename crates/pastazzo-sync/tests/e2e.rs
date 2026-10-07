@@ -338,3 +338,20 @@ fn every_device_shows_the_same_account_key_fingerprint() {
         mac.device.public().fingerprint()
     );
 }
+
+#[test]
+fn devices_dont_download_their_own_items() {
+    let (url, fingerprint, links) = start_server(1);
+    let laptop = account::join(&links[0], "seb", PASSWORD, "laptop").unwrap();
+    let mac = account::login(&url, &fingerprint, "seb", PASSWORD, "Mac Pro").unwrap();
+    let laptop_path = temp_state("own-laptop");
+    let (laptop_daemon, _) = device(laptop, &laptop_path, false);
+    laptop_daemon.send(&Content::Text("mine".into())).unwrap();
+
+    let remote = Remote::new(&url);
+    let laptop = State::load(&laptop_path).unwrap();
+    let own = remote.items(&laptop, 0, 0).unwrap();
+    assert!(own.items.is_empty());
+    assert!(own.cursor > 0, "the cursor still moves past them");
+    assert_eq!(remote.items(&mac, 0, 0).unwrap().items.len(), 1);
+}

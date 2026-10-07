@@ -718,7 +718,7 @@ async fn get_items(
     uri: Uri,
     headers: HeaderMap,
 ) -> ApiResult<Json<ItemsPage>> {
-    let (account, _) = app.authenticate(&method, &uri, &headers, b"")?;
+    let (account, device) = app.authenticate(&method, &uri, &headers, b"")?;
     let after = match query.after.as_deref() {
         // A new device only wants what comes next.
         Some("latest") => {
@@ -760,7 +760,12 @@ async fn get_items(
     let mut cursor = after;
     let mut size = 0;
     let mut page = Vec::new();
-    for (seq, data) in items {
+    for (seq, sender, data) in items {
+        // A device's own items only move its cursor along: it has them already.
+        if sender == device {
+            cursor = seq;
+            continue;
+        }
         if !page.is_empty() && size + data.len() > MAX_PAGE_BYTES {
             break;
         }

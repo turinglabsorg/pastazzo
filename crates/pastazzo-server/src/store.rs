@@ -313,19 +313,25 @@ impl Store {
         )
     }
 
-    /// Items after `cursor`, oldest first, at most `limit`.
+    /// Items after `cursor`, oldest first, at most `limit`: cursor, sending
+    /// device and data.
     pub fn items_after(
         &self,
         account: &Id,
         cursor: u64,
         limit: usize,
-    ) -> rusqlite::Result<Vec<(u64, Vec<u8>)>> {
-        let mut statement = self.db.prepare(
-            "SELECT seq, data FROM items WHERE account = ?1 AND seq > ?2 ORDER BY seq LIMIT ?3",
-        )?;
-        let rows = statement
-            .query_map(params![&account[..], cursor as i64, limit as i64], |row| {
-                Ok((row.get::<_, i64>(0)? as u64, row.get(1)?))
+    ) -> rusqlite::Result<Vec<(u64, Id, Vec<u8>)>> {
+        let mut statement = self
+            .db
+            .prepare("SELECT seq, device, data FROM items WHERE account = ?1 AND seq > ?2 ORDER BY seq LIMIT ?3")?;
+        let rows =
+            statement.query_map(params![&account[..], cursor as i64, limit as i64], |row| {
+                let device: Vec<u8> = row.get(1)?;
+                Ok((
+                    row.get::<_, i64>(0)? as u64,
+                    device.try_into().unwrap_or([0; 16]),
+                    row.get(2)?,
+                ))
             })?;
         rows.collect()
     }
@@ -438,7 +444,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             store.items_after(&[3; 16], first, 10).unwrap(),
-            vec![(second, b"b".to_vec())]
+            vec![(second, [7; 16], b"b".to_vec())]
         );
         assert_eq!(store.latest_cursor(&[3; 16]).unwrap(), second);
 

@@ -395,6 +395,8 @@ impl Daemon {
             &mut |done, total| {
                 if total >= ANNOUNCE_BYTES as u64 {
                     let mut status = self.status.lock().unwrap();
+                    // What's downloading is what was being uploaded: that's done.
+                    status.incoming.clear();
                     status.downloading = Some(Transfer {
                         direction: "receive",
                         device: sender.clone(),
