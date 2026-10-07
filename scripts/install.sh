@@ -11,6 +11,7 @@ OLD_EXT_UUID="pastebar@turinglabs"
 EXT_DIR="$HOME/.local/share/gnome-shell/extensions/$EXT_UUID"
 OLD_DATA_DIR="$HOME/.local/share/pastebar/items"
 DATA_DIR="$HOME/.local/share/pastazzo/items"
+UNIT_DIR="$HOME/.config/systemd/user"
 
 need_cmd() {
   command -v "$1" >/dev/null 2>&1
@@ -53,9 +54,22 @@ sync_source() {
 }
 
 install_binary() {
-  cargo build --release --manifest-path "$SRC_DIR/Cargo.toml"
+  cargo build --release --manifest-path "$SRC_DIR/Cargo.toml" -p pastazzo -p pastazzo-sync
   mkdir -p "$BIN_DIR"
   install -m 0755 "$SRC_DIR/target/release/pastazzo" "$BIN_PATH"
+  install -m 0755 "$SRC_DIR/target/release/pastazzo-sync" "$BIN_DIR/pastazzo-sync"
+}
+
+# Sync only starts once this device joins or logs in to an account: until
+# then the .path unit waits and nothing runs.
+install_sync_units() {
+  need_cmd systemctl || return 0
+  mkdir -p "$UNIT_DIR"
+  cp "$SRC_DIR/contrib/systemd/pastazzo-sync.path" "$SRC_DIR/contrib/systemd/pastazzo-sync.service" "$UNIT_DIR/"
+  systemctl --user daemon-reload >/dev/null 2>&1 || return 0
+  systemctl --user enable --now pastazzo-sync.path >/dev/null 2>&1 || true
+  # A running sync picks up the new binary.
+  systemctl --user try-restart pastazzo-sync.service >/dev/null 2>&1 || true
 }
 
 install_extension() {
@@ -82,6 +96,7 @@ main() {
   install_missing_deps
   sync_source
   install_binary
+  install_sync_units
   install_extension
   migrate_history
 
