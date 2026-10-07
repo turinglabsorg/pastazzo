@@ -1,0 +1,25 @@
+[package]
+name = "pastazzo-core"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Protocol and end-to-end encryption shared by every pastazzo client and server"
+
+[dependencies]
+opaque-ke = { version = "4.0.1", features = ["argon2", "ristretto255"] }
+argon2 = "0.5"
+chacha20poly1305 = "0.10"
+ed25519-dalek = { version = "2", features = ["rand_core", "zeroize"] }
+hkdf = "0.12"
+hmac = "0.12"
+rand = "0.8"
+sha2 = "0.10"
+subtle = "2.6"
+zeroize = { version = "1.8", features = ["zeroize_derive"] }
+base64 = "0.22"
+crypto_box = { version = "0.9", features = ["seal"] }
+unicode-normalization = "0.1"
+
+[dev-dependencies]
+rand_chacha = "0.3"
