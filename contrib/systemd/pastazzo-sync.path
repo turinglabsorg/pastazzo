@@ -1,0 +1,8 @@
+[Unit]
+Description=Start pastazzo sync once this device is logged in
+
+[Path]
+PathExists=%h/.config/pastazzo/sync.json
+
+[Install]
+WantedBy=default.target

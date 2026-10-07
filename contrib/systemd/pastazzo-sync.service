@@ -1,0 +1,11 @@
+[Unit]
+Description=pastazzo end-to-end encrypted clipboard sync
+After=graphical-session.target
+
+[Service]
+ExecStart=%h/.local/bin/pastazzo-sync run
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target

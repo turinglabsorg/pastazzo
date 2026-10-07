@@ -87,7 +87,14 @@ On the first device, with the invite link:
 pastazzo-sync join 'pastazzo://join?...' --username you
 ```
 
-It prints the command to log in on the other devices. Then keep `pastazzo-sync run` running: the repository's `systemd` and `launchd` examples are in the issue for now. On GNOME, items from other devices go on the clipboard through the extension, so log out and back in after updating it.
+It prints the command to log in on the other devices. Then keep `pastazzo-sync run` running, for example with the units in [`contrib/`](contrib):
+
+```bash
+cp contrib/systemd/pastazzo-sync.* ~/.config/systemd/user/
+systemctl --user enable --now pastazzo-sync.path
+```
+
+The `.path` unit starts sync as soon as the device is logged in. On macOS, use [`contrib/launchd/org.pastazzo.sync.plist`](contrib/launchd/org.pastazzo.sync.plist). On GNOME, items from other devices go on the clipboard through the extension, so log out and back in after updating it.
 
 ## Development
 
@@ -95,6 +102,8 @@ The repository is a Cargo workspace:
 
 - `crates/pastazzo`: the history store and CLI used by the extension
 - `crates/pastazzo-core`: the sync protocol and its end-to-end encryption
+- `crates/pastazzo-server`: the sync server
+- `crates/pastazzo-sync`: the sync client for Linux and macOS
 
 Build the backend:
 
@@ -102,10 +111,10 @@ Build the backend:
 cargo build --release
 ```
 
-Run the protocol tests:
+Run the sync tests (protocol, server, and two clients against a server in-process):
 
 ```bash
-cargo test -p pastazzo-core
+cargo test -p pastazzo-core -p pastazzo-server -p pastazzo-sync
 ```
 
 Install from a local checkout:

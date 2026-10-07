@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Runs pastazzo-sync while this Mac is logged in. Replace YOU with your
+  user name, copy to ~/Library/LaunchAgents/, then:
+  launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/org.pastazzo.sync.plist
+-->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>org.pastazzo.sync</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/Users/YOU/.local/bin/pastazzo-sync</string>
+		<string>run</string>
+	</array>
+	<key>KeepAlive</key>
+	<dict>
+		<key>PathState</key>
+		<dict>
+			<key>/Users/YOU/Library/Application Support/pastazzo/sync.json</key>
+			<true/>
+		</dict>
+	</dict>
+	<key>ThrottleInterval</key>
+	<integer>10</integer>
+	<key>StandardOutPath</key>
+	<string>/Users/YOU/Library/Logs/pastazzo-sync.log</string>
+	<key>StandardErrorPath</key>
+	<string>/Users/YOU/Library/Logs/pastazzo-sync.log</string>
+</dict>
+</plist>
