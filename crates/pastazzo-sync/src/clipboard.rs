@@ -5,7 +5,10 @@
 //!   the pastazzo history, so new local copies are new files there. Received
 //!   items are added to the history with the `pastazzo` CLI and dropped in
 //!   an inbox the extension puts on the clipboard.
-//! - macOS: `pbpaste` and `pbcopy` for text, AppleScript for received PNGs.
+//! - macOS with the Pastazzo app: the same as GNOME, the app saves copies to
+//!   the pastazzo history and puts received items on the pasteboard.
+//! - macOS without it: `pbpaste` and `pbcopy` for text, AppleScript for
+//!   received PNGs.
 
 use std::collections::HashSet;
 use std::ffi::OsString;
@@ -28,11 +31,25 @@ pub trait Clipboard: Send {
 }
 
 pub fn platform() -> Result<Box<dyn Clipboard>> {
-    if cfg!(target_os = "macos") {
+    if cfg!(target_os = "macos") && !mac_app_installed() {
         Ok(Box::new(Pasteboard::new()))
     } else {
         Ok(Box::new(PastazzoStore::new()?))
     }
+}
+
+/// `PASTAZZO_CLIPBOARD=store` or `pasteboard` overrides the detection.
+fn mac_app_installed() -> bool {
+    if let Ok(choice) = std::env::var("PASTAZZO_CLIPBOARD") {
+        return choice == "store";
+    }
+    let home = std::env::var("HOME").unwrap_or_default();
+    [
+        PathBuf::from("/Applications/Pastazzo.app"),
+        Path::new(&home).join("Applications/Pastazzo.app"),
+    ]
+    .iter()
+    .any(|app| app.exists())
 }
 
 fn image_extension(mime: &str) -> Option<&'static str> {
