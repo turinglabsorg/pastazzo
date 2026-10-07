@@ -43,7 +43,7 @@ Against the server itself, all of the above except where noted below: it doesn't
 - **Replays of old items.** A server can send an old, authentic item again. Clients ignore item ids they've already seen and never put an item on the clipboard if it's older than the last one they applied, but an item older than what a device remembers could reappear in its history, and an old "clear history" could empty it again.
 - **Revoked devices, until key rotation exists.** Revoking a device makes the server refuse its requests, but the device still has the account key and the account secret: with the password it could log in again as a new device and open the account key without anyone's approval, and a server could keep presenting its record to your other devices. Cutting a device off for good needs a rotation of the account key and secret and an authenticated, versioned device list; both are planned and not built yet.
 - **A compromised device.** It has the account key and can read everything.
-- **Your clipboard history on each device.** It is stored on the device as it is today. Protecting it is up to the device (disk encryption, screen lock).
+- **Your clipboard history on each device.** It is stored on the device as it is today, unencrypted. The history and the inbox of received items are readable by your user only (directories 0700, files 0600), so other accounts on the same machine can't read them, but root, backups and anything running as you can. Protecting it beyond that is up to the device (disk encryption, screen lock).
 
 ## For operators
 
