@@ -9,8 +9,27 @@ struct HistoryItem: Decodable, Identifiable, Equatable {
     let preview: String
     let text: String
     let path: String
+    /// The device it was synced from; empty for copies made on this Mac.
+    let origin: String
 
     var isImage: Bool { kind == "image" }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, timestamp, kind, mime, preview, text, path, origin
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        timestamp = try container.decode(Double.self, forKey: .timestamp)
+        kind = try container.decode(String.self, forKey: .kind)
+        mime = try container.decode(String.self, forKey: .mime)
+        preview = try container.decode(String.self, forKey: .preview)
+        text = try container.decode(String.self, forKey: .text)
+        path = try container.decode(String.self, forKey: .path)
+        // Older pastazzo CLIs don't record it.
+        origin = try container.decodeIfPresent(String.self, forKey: .origin) ?? ""
+    }
     var date: Date { Date(timeIntervalSince1970: timestamp / 1000) }
 }
 

@@ -49,13 +49,18 @@ final class ShelfController {
 
     private let store: HistoryStore
     private let watcher: ClipboardWatcher
+    private let sync: SyncMonitor
     private let model: ShelfModel
     private let panel: ShelfPanel
     private var monitors: [Any] = []
+    /// When the shelf last closed: a click on the menu bar icon that closed
+    /// it shouldn't open it again.
+    private var closedAt = Date.distantPast
 
-    init(store: HistoryStore, watcher: ClipboardWatcher) {
+    init(store: HistoryStore, watcher: ClipboardWatcher, sync: SyncMonitor) {
         self.store = store
         self.watcher = watcher
+        self.sync = sync
         model = ShelfModel(store: store)
         panel = ShelfPanel(
             contentRect: .zero,
@@ -78,7 +83,11 @@ final class ShelfController {
     var isOpen: Bool { panel.isVisible }
 
     func toggle() {
-        isOpen ? close() : open()
+        if isOpen {
+            close()
+        } else if Date().timeIntervalSince(closedAt) > 0.3 {
+            open()
+        }
     }
 
     func open() {
@@ -100,6 +109,7 @@ final class ShelfController {
         // A fresh view each time, so the search field gets the focus again.
         panel.contentView = NSHostingView(rootView: ShelfView(
             model: model,
+            sync: sync,
             onActivate: { [weak self] item, paste in self?.activate(item, paste: paste) },
             onClear: { [weak self] in self?.clearHistory() }
         ))
@@ -112,6 +122,7 @@ final class ShelfController {
         monitors.forEach(NSEvent.removeMonitor)
         monitors.removeAll()
         panel.orderOut(nil)
+        closedAt = Date()
     }
 
     private func installMonitors() {
@@ -181,6 +192,7 @@ final class ShelfController {
 
 struct ShelfView: View {
     @ObservedObject var model: ShelfModel
+    @ObservedObject var sync: SyncMonitor
     let onActivate: (HistoryItem, Bool) -> Void
     let onClear: () -> Void
     @FocusState private var searchFocused: Bool
@@ -193,6 +205,14 @@ struct ShelfView: View {
                     .textFieldStyle(.plain)
                     .font(.system(size: 15))
                     .focused($searchFocused)
+                if let transfer = sync.transferText {
+                    Text(transfer)
+                        .font(.system(size: 13).monospacedDigit())
+                        .lineLimit(1)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 4)
+                        .background(Capsule().fill(Color.accentColor.opacity(0.25)))
+                }
                 Button(action: onClear) { Image(systemName: "trash") }
                     .buttonStyle(.borderless)
                     .help("Clear history")
@@ -210,7 +230,7 @@ struct ShelfView: View {
                     ScrollView(.horizontal, showsIndicators: false) {
                         LazyHStack(spacing: 8) {
                             ForEach(Array(model.items.enumerated()), id: \.element.id) { index, item in
-                                CardView(item: item, selected: index == model.selection)
+                                CardView(item: item, selected: index == model.selection, localDevice: sync.localDevice)
                                     .id(item.id)
                                     // Like the GNOME shelf: one click copies, two paste.
                                     .gesture(
@@ -237,6 +257,10 @@ struct ShelfView: View {
 struct CardView: View {
     let item: HistoryItem
     let selected: Bool
+    /// This Mac's name once it syncs, shown on copies made here.
+    let localDevice: String
+
+    private var origin: String { item.origin.isEmpty ? localDevice : item.origin }
 
     private static let relative: RelativeDateTimeFormatter = {
         let formatter = RelativeDateTimeFormatter()
@@ -250,6 +274,9 @@ struct CardView: View {
                 Image(systemName: item.isImage ? "photo" : "text.alignleft")
                 Text(Self.relative.localizedString(for: item.date, relativeTo: Date()))
                 Spacer()
+                if !origin.isEmpty {
+                    Text(origin).lineLimit(1).truncationMode(.tail)
+                }
             }
             .font(.caption)
             .foregroundColor(.secondary)

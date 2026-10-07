@@ -162,18 +162,41 @@ pub fn login(
     Ok(state)
 }
 
-/// Names of the account's devices, as their records decrypt.
-pub fn device_names(state: &State) -> Result<Vec<(String, bool)>> {
+/// A device of the account, as its record decrypts.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DeviceInfo {
+    pub id: pastazzo_core::Id,
+    pub name: String,
+    /// SHA-256 of its public keys, to compare with what the device itself shows.
+    pub fingerprint: [u8; 32],
+    pub this: bool,
+}
+
+/// The account's devices. Records that don't decrypt weren't made by a
+/// holder of the account key, and are left out.
+pub fn devices(state: &State) -> Result<Vec<DeviceInfo>> {
     let remote = Remote::new(&state.server_url);
-    let mut names = Vec::new();
+    let mut devices = Vec::new();
     for record in remote.device_records(state)? {
         let Ok(record) = SealedDeviceRecord::from_bytes(&record) else {
             continue;
         };
-        // Records that don't decrypt weren't made by a holder of the account key.
         if let Ok(name) = record.open(&state.account_key, &state.account) {
-            names.push((name, record.device.id == state.device.id()));
+            devices.push(DeviceInfo {
+                id: record.device.id,
+                name,
+                fingerprint: record.device.fingerprint(),
+                this: record.device.id == state.device.id(),
+            });
         }
     }
-    Ok(names)
+    Ok(devices)
+}
+
+/// Names of the account's devices, as their records decrypt.
+pub fn device_names(state: &State) -> Result<Vec<(String, bool)>> {
+    Ok(devices(state)?
+        .into_iter()
+        .map(|d| (d.name, d.this))
+        .collect())
 }

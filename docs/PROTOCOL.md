@@ -50,6 +50,17 @@ aad          = transcript("pastazzo/v1/wrapped-account-key", [account_id, u32be(
 wrapped      = u32be(epoch) || nonce(24) || XChaCha20-Poly1305(wrapping_key, nonce, AK, aad)   // 76 bytes, epoch ≥ 1
 ```
 
+### Fingerprints
+
+Settings show fingerprints so people can check, by eye, that every device holds the same account key and talks to the same server:
+
+```text
+account key fingerprint = first 16 bytes of kdf(AK, transcript("pastazzo/v1/subkey", ["fingerprint", u32be(epoch)]))
+device fingerprint      = SHA-256(transcript("pastazzo/v1/device-fingerprint", [device_public]))
+```
+
+The account key fingerprint is a subkey of its own, so showing it reveals nothing about the key or the other subkeys, and the server can't compute it. The server fingerprint is defined under [Server identity](#server-identity). They're shown as the first 16 bytes in uppercase hex, in groups of four.
+
 ### Device keys
 
 Every device generates an Ed25519 signing key and an X25519 exchange key and keeps them in the OS keychain:
@@ -168,6 +179,7 @@ content = kind(1) || u32be(len(mime)) || mime || data
 
 - Text: kind `1`, empty mime, UTF-8 data up to 1 MiB.
 - Image: kind `2`, mime `image/<subtype>` (subtype of `A-Z a-z 0-9 + - .`, mime at most 64 bytes), data up to 25 MiB.
+- Clear history: kind `3`, empty mime and data. Not a copy: every device that receives it empties its clipboard history. Like any item, only a holder of the account key can make one.
 
 It's padded before encryption, to hide its length:
 
@@ -215,10 +227,16 @@ JSON bodies unless noted. Endpoints marked *signed* need a [signed request](#sig
 | `PUT /v1/devices/{id}` | *Signed.* Publish this device's record (binary body) |
 | `GET /v1/devices` | *Signed.* The account's device records |
 | `DELETE /v1/devices/{id}` | *Signed.* Revoke a device of the account |
-| `POST /v1/items` | *Signed.* Upload a sealed item (binary body); answers with its cursor |
-| `GET /v1/items?after=<cursor>&wait=<seconds>` | *Signed.* Items after a cursor, oldest first. With none yet, the server holds the request up to `wait` seconds (at most 30) and answers as soon as one arrives. `after=latest` returns only the current cursor, for a device that only wants what comes next. |
+| `POST /v1/items/announce` | *Signed.* `{"id", "size"}`: an upload of that sealed item is about to start |
+| `POST /v1/items` | *Signed.* Upload a sealed item (binary body, possibly chunked); answers with its cursor |
+| `GET /v1/items?after=<cursor>&wait=<seconds>&pending=<version>` | *Signed.* Items after a cursor, oldest first, with the announced uploads in progress. With nothing new, the server holds the request up to `wait` seconds (at most 30) and answers as soon as an item arrives or, if `pending` is given, as soon as the uploads change from that version. `after=latest` returns only the current cursor, for a device that only wants what comes next. |
+| `DELETE /v1/items` | *Signed.* Delete every item of the account |
 
 Receiving is long polling rather than WebSockets so it works through any proxy or tunnel.
+
+### Progress of big items
+
+Clients announce items of 64 KiB or more before uploading them. The server keeps the announcement for that device and item, and counts the bytes of the upload as they stream in. Items pages carry the account's uploads in progress (`pending`: uploading device, item id, size, bytes received) and a `pending_version` that changes with them, so the other devices show an item coming while it's still being uploaded, and then follow their own download. Nothing about an upload is stored, or passed on as an item, until the whole request and its signature check out.
 
 ## Not yet specified
 
@@ -258,6 +276,8 @@ invite finish proof     3b010f76ff7919433b08230e6dfe98f96bbf3104a5375c718c58bb15
 device binding tag      61f1f33bd6249fe7a1daf2555e8be71a7e31d443d6c7f44f6d2e85e70e5f4ef2
 login response tag      cf8ea8ebbe3c33ab88a5c0448365e868032fb30ad34703c4c1294b911e613eb7
 server fingerprint      f69c9f26c4c1190ee7f3488ec1747cc838188379dda29cf9ca1ace9e6f403d9b
+account key fingerprint 6b02d833142fb0cab9369ae46e2e09a9
+device fingerprint      4a4e0279a9f5c72f651881210fad3c1bb987a210771c5f59ce4baa19b382e0d7
 ```
 
 The tests also run a full registration and login with a ChaCha20 RNG seeded with `42` × 32 and pin the resulting export key, session key and password file. Those values depend on how opaque-ke draws random numbers, so they're a regression check for this implementation, not vectors for another one: what they pin is the cipher suite, the Argon2id parameters, the identifiers and the context.

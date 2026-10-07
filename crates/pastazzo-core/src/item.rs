@@ -18,11 +18,18 @@ const MAX_MIME_LEN: usize = 64;
 
 const KIND_TEXT: u8 = 1;
 const KIND_IMAGE: u8 = 2;
+const KIND_CLEAR_HISTORY: u8 = 3;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Content {
     Text(String),
-    Image { mime: String, data: Vec<u8> },
+    Image {
+        mime: String,
+        data: Vec<u8>,
+    },
+    /// Not a copy: asks every device to clear its clipboard history. Only
+    /// holders of the account key can send it, like any other item.
+    ClearHistory,
 }
 
 impl Content {
@@ -30,6 +37,7 @@ impl Content {
     fn encode(&self) -> Result<Vec<u8>, Error> {
         let (kind, mime, data): (u8, &str, &[u8]) = match self {
             Content::Text(text) if text.len() <= MAX_TEXT_BYTES => (KIND_TEXT, "", text.as_bytes()),
+            Content::ClearHistory => (KIND_CLEAR_HISTORY, "", &[]),
             Content::Image { mime, data } if data.len() <= MAX_IMAGE_BYTES => {
                 validate_image_mime(mime)?;
                 (KIND_IMAGE, mime, data)
@@ -61,6 +69,7 @@ impl Content {
                     data: data.to_vec(),
                 })
             }
+            KIND_CLEAR_HISTORY if mime.is_empty() && data.is_empty() => Ok(Content::ClearHistory),
             _ => Err(Error::Malformed("item content")),
         }
     }
@@ -239,6 +248,7 @@ mod tests {
         for content in [
             Content::Text("hunter2".into()),
             Content::Text(String::new()),
+            Content::ClearHistory,
             Content::Text("é".repeat(1000)),
             Content::Image {
                 mime: "image/png".into(),

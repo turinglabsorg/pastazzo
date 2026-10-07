@@ -10,6 +10,7 @@ description = "Self-hostable pastazzo sync server: stores and relays end-to-end 
 pastazzo-core = { path = "../pastazzo-core" }
 axum = "0.8"
 base64 = "0.22"
+http-body-util = "0.1"
 rand = "0.8"
 rusqlite = { version = "0.40", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }

@@ -135,6 +135,26 @@ pub struct LoginFinished {
     pub tag: B64,
 }
 
+/// `POST /v1/items/announce`: a device is about to upload a big item, so the
+/// other devices can show it coming.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ItemAnnounce {
+    pub id: B64,
+    /// Size of the sealed item in bytes.
+    pub size: u64,
+}
+
+/// An announced upload in progress.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PendingTransfer {
+    /// The uploading device.
+    pub device: B64,
+    pub item: B64,
+    pub size: u64,
+    /// Bytes the server has received so far.
+    pub received: u64,
+}
+
 /// `POST /v1/items` answer.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ItemPosted {
@@ -148,6 +168,13 @@ pub struct ItemsPage {
     pub cursor: u64,
     /// [`crate::item::SealedItem::to_bytes`]
     pub items: Vec<B64>,
+    /// Announced uploads still in progress.
+    #[serde(default)]
+    pub pending: Vec<PendingTransfer>,
+    /// Changes whenever `pending` does; pass it back as `pending=` to also be
+    /// woken up by progress.
+    #[serde(default)]
+    pub pending_version: u64,
 }
 
 /// `GET /v1/devices`

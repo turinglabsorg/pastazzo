@@ -149,6 +149,8 @@ fn vectors() -> Vec<(&'static str, String)> {
             )),
         ),
         ("server fingerprint", hex(&server.fingerprint())),
+        ("account key fingerprint", hex(&key.fingerprint())),
+        ("device fingerprint", hex(&device.public().fingerprint())),
     ];
     vectors.extend(opaque_vectors());
     vectors
@@ -207,6 +209,14 @@ const EXPECTED: &[(&str, &str)] = &[
     (
         "server fingerprint",
         "f69c9f26c4c1190ee7f3488ec1747cc838188379dda29cf9ca1ace9e6f403d9b",
+    ),
+    (
+        "account key fingerprint",
+        "6b02d833142fb0cab9369ae46e2e09a9",
+    ),
+    (
+        "device fingerprint",
+        "4a4e0279a9f5c72f651881210fad3c1bb987a210771c5f59ce4baa19b382e0d7",
     ),
     (
         "opaque server fingerprint",

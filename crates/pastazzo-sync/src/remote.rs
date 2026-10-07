@@ -3,7 +3,10 @@
 
 use std::time::Duration;
 
-use pastazzo_core::api::{self, B64, DeviceRecords, ErrorBody, ItemPosted, ItemsPage, ServerInfo};
+use pastazzo_core::Id;
+use pastazzo_core::api::{
+    self, B64, DeviceRecords, ErrorBody, ItemAnnounce, ItemPosted, ItemsPage, ServerInfo,
+};
 use pastazzo_core::request::RequestSignature;
 use rand::rngs::OsRng;
 use serde::Serialize;
@@ -167,9 +170,104 @@ impl Remote {
         Ok(posted.cursor)
     }
 
+    /// Tells the server a big item is coming, so the other devices can show it.
+    pub fn announce(&self, state: &State, item: &Id, size: u64) -> Result<()> {
+        let body = serde_json::to_vec(&ItemAnnounce {
+            id: B64(item.to_vec()),
+            size,
+        })
+        .map_err(|e| e.to_string())?;
+        let path = "/v1/items/announce";
+        let mut request = self
+            .agent
+            .post(format!("{}{path}", self.base))
+            .content_type("application/json");
+        for (name, value) in Self::signature_headers(state, "POST", path, &body) {
+            request = request.header(name, value);
+        }
+        Self::check_empty(
+            request
+                .send(&body[..])
+                .map_err(|e| format!("can't reach {}: {e}", self.base))?,
+        )
+    }
+
+    /// Uploads an item as a stream, reporting `(sent, total)` bytes.
+    pub fn upload_item(
+        &self,
+        state: &State,
+        sealed: &[u8],
+        progress: &mut dyn FnMut(u64, u64),
+    ) -> Result<u64> {
+        let path = "/v1/items";
+        let mut request = self
+            .agent
+            .post(format!("{}{path}", self.base))
+            .content_type("application/octet-stream");
+        for (name, value) in Self::signature_headers(state, "POST", path, sealed) {
+            request = request.header(name, value);
+        }
+        let mut reader = Counting {
+            inner: sealed,
+            done: 0,
+            total: sealed.len() as u64,
+            progress,
+        };
+        let response = request
+            .send(ureq::SendBody::from_reader(&mut reader))
+            .map_err(|e| format!("can't reach {}: {e}", self.base))?;
+        let posted: ItemPosted = Self::check(response)?;
+        Ok(posted.cursor)
+    }
+
     /// Items after `cursor`, waiting up to `wait` seconds if there are none.
     pub fn items(&self, state: &State, after: u64, wait: u64) -> Result<ItemsPage> {
-        Self::check(self.signed_get(state, &format!("/v1/items?after={after}&wait={wait}"))?)
+        self.items_with_progress(state, after, wait, None, &mut |_, _| {})
+    }
+
+    /// [`Remote::items`] that also returns when announced uploads progress
+    /// past `pending_version`, and reports `(read, total)` bytes of the
+    /// answer as it downloads.
+    pub fn items_with_progress(
+        &self,
+        state: &State,
+        after: u64,
+        wait: u64,
+        pending_version: Option<u64>,
+        progress: &mut dyn FnMut(u64, u64),
+    ) -> Result<ItemsPage> {
+        let mut path = format!("/v1/items?after={after}&wait={wait}");
+        if let Some(version) = pending_version {
+            path.push_str(&format!("&pending={version}"));
+        }
+        let mut response = self.signed_get(state, &path)?;
+        if !response.status().is_success() {
+            return Self::check(response);
+        }
+        let total = response
+            .headers()
+            .get("content-length")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0);
+        let reader = response
+            .body_mut()
+            .with_config()
+            .limit(MAX_RESPONSE_BYTES)
+            .reader();
+        let counting = Counting {
+            inner: reader,
+            done: 0,
+            total,
+            progress,
+        };
+        serde_json::from_reader(std::io::BufReader::new(counting))
+            .map_err(|e| format!("invalid server response: {e}"))
+    }
+
+    /// Deletes every item of the account from the server.
+    pub fn delete_items(&self, state: &State) -> Result<()> {
+        Self::check_empty(self.signed_send(state, "DELETE", "/v1/items", b"")?)
     }
 
     pub fn latest_cursor(&self, state: &State) -> Result<u64> {
@@ -190,5 +288,22 @@ impl Remote {
     pub fn revoke_device(&self, state: &State, device: &[u8; 16]) -> Result<()> {
         let path = format!("/v1/devices/{}", B64::encode(device));
         Self::check_empty(self.signed_send(state, "DELETE", &path, b"")?)
+    }
+}
+
+/// A reader that reports how much has gone through it.
+struct Counting<'a, R> {
+    inner: R,
+    done: u64,
+    total: u64,
+    progress: &'a mut dyn FnMut(u64, u64),
+}
+
+impl<R: std::io::Read> std::io::Read for Counting<'_, R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let read = self.inner.read(buf)?;
+        self.done += read as u64;
+        (self.progress)(self.done, self.total);
+        Ok(read)
     }
 }

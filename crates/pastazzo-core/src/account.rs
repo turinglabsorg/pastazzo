@@ -55,6 +55,16 @@ impl AccountKey {
         &self.key
     }
 
+    /// A fingerprint of the account key, safe to show: a subkey of its own,
+    /// so it reveals nothing about the key or the other subkeys. Every device
+    /// of the account shows the same one; the server can't compute it.
+    pub fn fingerprint(&self) -> [u8; 16] {
+        let subkey = self.subkey("fingerprint");
+        let mut fingerprint = [0u8; 16];
+        fingerprint.copy_from_slice(&subkey[..16]);
+        fingerprint
+    }
+
     pub(crate) fn items_key(&self) -> Zeroizing<[u8; 32]> {
         self.subkey("items")
     }
@@ -216,6 +226,24 @@ mod tests {
         assert_ne!(*key.items_key(), *key.devices_key());
         let next = AccountKey::from_bytes(2, [3u8; 32]).unwrap();
         assert_ne!(*key.items_key(), *next.items_key());
+    }
+
+    #[test]
+    fn fingerprint_is_stable_and_per_key() {
+        let key = AccountKey::from_bytes(1, [3u8; 32]).unwrap();
+        assert_eq!(
+            key.fingerprint(),
+            AccountKey::from_bytes(1, [3u8; 32]).unwrap().fingerprint()
+        );
+        assert_ne!(
+            key.fingerprint(),
+            AccountKey::from_bytes(1, [4u8; 32]).unwrap().fingerprint()
+        );
+        assert_ne!(
+            key.fingerprint(),
+            AccountKey::from_bytes(2, [3u8; 32]).unwrap().fingerprint()
+        );
+        assert_ne!(key.fingerprint()[..], key.items_key()[..16]);
     }
 
     #[test]

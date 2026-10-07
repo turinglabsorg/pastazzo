@@ -130,3 +130,17 @@
   font-size: 14px;
   padding: 22px 12px;
 }
+
+.pastebar-transfer {
+  color: rgba(255, 255, 255, 0.85);
+  background-color: rgba(53, 132, 228, 0.35);
+  border-radius: 10px;
+  padding: 0 12px;
+  min-height: 34px;
+  font-size: 13px;
+}
+
+.pastazzo-indicator-label {
+  padding-left: 4px;
+  font-feature-settings: "tnum";
+}

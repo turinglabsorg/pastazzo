@@ -117,6 +117,16 @@ impl DevicePublic {
         Ok(public)
     }
 
+    /// SHA-256 of the device's public keys, to compare across devices.
+    pub fn fingerprint(&self) -> [u8; 32] {
+        use sha2::{Digest, Sha256};
+        Sha256::digest(transcript(
+            "pastazzo/v1/device-fingerprint",
+            &[&self.to_bytes()],
+        ))
+        .into()
+    }
+
     pub(crate) fn verifying_key(&self) -> Result<VerifyingKey, Error> {
         VerifyingKey::from_bytes(&self.signing).map_err(|_| Error::Malformed("device signing key"))
     }

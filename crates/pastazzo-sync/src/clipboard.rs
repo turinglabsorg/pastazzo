@@ -24,10 +24,25 @@ use crate::{Result, log};
 pub trait Clipboard: Send {
     /// New local copies since the last call, oldest first.
     fn poll(&mut self) -> Vec<Content>;
-    /// Puts a received item on the clipboard, and in the history if there is one.
-    fn apply(&mut self, content: &Content) -> Result<()>;
+    /// Puts a received item on the clipboard, and in the history if there
+    /// is one, noting the device it came from.
+    fn apply(&mut self, content: &Content, origin: &str) -> Result<()>;
     /// Only keeps a received item in the history, if there is one.
-    fn remember(&mut self, content: &Content) -> Result<()>;
+    fn remember(&mut self, content: &Content, origin: &str) -> Result<()>;
+    /// Empties the local history, if there is one.
+    fn clear_history(&mut self) -> Result<()>;
+}
+
+/// pastazzo's data directory: `$XDG_DATA_HOME/pastazzo`, else
+/// `~/.local/share/pastazzo`, on Linux and macOS alike. The history, the
+/// extension's inbox and the sync status files live here.
+pub fn data_dir() -> Result<PathBuf> {
+    let data = match std::env::var("XDG_DATA_HOME") {
+        Ok(dir) if !dir.is_empty() => PathBuf::from(dir),
+        _ => PathBuf::from(std::env::var("HOME").map_err(|_| "HOME is not set")?)
+            .join(".local/share"),
+    };
+    Ok(data.join("pastazzo"))
 }
 
 pub fn platform() -> Result<Box<dyn Clipboard>> {
@@ -86,12 +101,7 @@ pub struct PastazzoStore {
 
 impl PastazzoStore {
     pub fn new() -> Result<Self> {
-        let data = match std::env::var("XDG_DATA_HOME") {
-            Ok(dir) => PathBuf::from(dir),
-            Err(_) => PathBuf::from(std::env::var("HOME").map_err(|_| "HOME is not set")?)
-                .join(".local/share"),
-        };
-        let root = data.join("pastazzo");
+        let root = data_dir()?;
         // The pastazzo CLI next to this binary, else on the PATH.
         let cli = std::env::current_exe()
             .ok()
@@ -143,11 +153,15 @@ impl PastazzoStore {
         })
     }
 
-    fn add_to_history(&self, content: &Content) -> Result<()> {
-        let (args, input): (Vec<&str>, &[u8]) = match content {
+    fn add_to_history(&self, content: &Content, origin: &str) -> Result<()> {
+        let (mut args, input): (Vec<&str>, &[u8]) = match content {
             Content::Text(text) => (vec!["add"], text.as_bytes()),
             Content::Image { mime, data } => (vec!["add-image", mime], data),
+            Content::ClearHistory => return Ok(()),
         };
+        if !origin.is_empty() {
+            args.extend(["--origin", origin]);
+        }
         let mut child = Command::new(&self.cli)
             .args(&args)
             .stdin(Stdio::piped())
@@ -179,6 +193,7 @@ impl PastazzoStore {
         let (extension, bytes): (&str, &[u8]) = match content {
             Content::Text(text) => ("txt", text.as_bytes()),
             Content::Image { mime, data } => (image_extension(mime).unwrap_or("png"), data),
+            Content::ClearHistory => return Ok(()),
         };
         let name = format!("{:020}-{:08x}", crate::now(), rand::random::<u32>());
         let tmp = self.inbox.join(format!(".{name}.tmp"));
@@ -222,13 +237,32 @@ impl Clipboard for PastazzoStore {
         contents
     }
 
-    fn apply(&mut self, content: &Content) -> Result<()> {
-        self.add_to_history(content)?;
+    fn apply(&mut self, content: &Content, origin: &str) -> Result<()> {
+        self.add_to_history(content, origin)?;
         self.send_to_extension(content)
     }
 
-    fn remember(&mut self, content: &Content) -> Result<()> {
-        self.add_to_history(content)
+    fn remember(&mut self, content: &Content, origin: &str) -> Result<()> {
+        self.add_to_history(content, origin)
+    }
+
+    fn clear_history(&mut self) -> Result<()> {
+        let status = Command::new(&self.cli)
+            .arg("clear")
+            .stdin(Stdio::null())
+            .status()
+            .map_err(|e| format!("run {}: {e}", self.cli.display()))?;
+        if let Ok(entries) = fs::read_dir(&self.inbox) {
+            for entry in entries.filter_map(|e| e.ok()) {
+                let _ = fs::remove_file(entry.path());
+            }
+        }
+        self.known.clear();
+        if status.success() {
+            Ok(())
+        } else {
+            Err(format!("{} clear failed", self.cli.display()))
+        }
     }
 }
 
@@ -327,7 +361,7 @@ impl Clipboard for Pasteboard {
         vec![Content::Text(text)]
     }
 
-    fn apply(&mut self, content: &Content) -> Result<()> {
+    fn apply(&mut self, content: &Content, _origin: &str) -> Result<()> {
         match content {
             Content::Text(text) => {
                 Self::copy(text)?;
@@ -341,10 +375,15 @@ impl Clipboard for Pasteboard {
                 );
                 Ok(())
             }
+            Content::ClearHistory => Ok(()),
         }
     }
 
-    fn remember(&mut self, _content: &Content) -> Result<()> {
+    fn remember(&mut self, _content: &Content, _origin: &str) -> Result<()> {
+        Ok(())
+    }
+
+    fn clear_history(&mut self) -> Result<()> {
         Ok(())
     }
 }

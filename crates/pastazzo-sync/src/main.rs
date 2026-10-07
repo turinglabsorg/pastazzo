@@ -5,8 +5,10 @@
 //! pastazzo-sync login --server <url> --fingerprint <fp> --username <name> [--name <device name>]
 //! pastazzo-sync run
 //! pastazzo-sync send <text>
-//! pastazzo-sync status
+//! pastazzo-sync status [--json]
 //! pastazzo-sync devices
+//! pastazzo-sync revoke <device id>
+//! pastazzo-sync clear [--everywhere]
 //! pastazzo-sync logout
 //! ```
 //!
@@ -17,6 +19,7 @@ use std::process::Command;
 
 use pastazzo_core::api::B64;
 use pastazzo_core::item::Content;
+use pastazzo_core::{Id, display_fingerprint};
 use pastazzo_sync::remote::Remote;
 use pastazzo_sync::state::State;
 use pastazzo_sync::{Result, account, clipboard, daemon};
@@ -27,11 +30,16 @@ const USAGE: &str = "usage:
   pastazzo-sync login --server <url> --fingerprint <fp> --username <name> [--name <device name>]
   pastazzo-sync run
   pastazzo-sync send <text>
-  pastazzo-sync status
+  pastazzo-sync status [--json]
   pastazzo-sync devices
+  pastazzo-sync revoke <device id>
+  pastazzo-sync clear [--everywhere]
   pastazzo-sync logout
 
 join and login read the password from the terminal, or from --password-file <file>";
+
+/// Options that take no value.
+const FLAGS: &[&str] = &["--json", "--everywhere"];
 
 /// Passwords for new accounts must be at least this long.
 const MIN_PASSWORD_CHARS: usize = 12;
@@ -55,7 +63,9 @@ impl Args {
         let command = args.next().ok_or(USAGE)?;
         let (mut positional, mut options) = (Vec::new(), Vec::new());
         while let Some(arg) = args.next() {
-            if let Some(name) = arg.strip_prefix("--") {
+            if FLAGS.contains(&arg.as_str()) {
+                options.push((arg.trim_start_matches('-').to_owned(), String::new()));
+            } else if let Some(name) = arg.strip_prefix("--") {
                 let value = args.next().ok_or(format!("--{name} needs a value"))?;
                 options.push((name.to_owned(), value));
             } else {
@@ -173,7 +183,9 @@ fn run() -> Result<()> {
             println!("logged in as {} on {}", state.username, state.server_url);
             Ok(())
         }
-        "run" => daemon::Daemon::new(State::load(&path)?, &path, clipboard::platform()?).run(),
+        "run" => daemon::Daemon::new(State::load(&path)?, &path, clipboard::platform()?)
+            .with_status_dir(clipboard::data_dir()?.join("sync"))?
+            .run(),
         "send" => {
             let text = args.positional.join(" ");
             if text.is_empty() {
@@ -185,13 +197,30 @@ fn run() -> Result<()> {
             Ok(())
         }
         "status" => {
+            if args.option("json").is_some() {
+                println!("{}", status_json(&path));
+                return Ok(());
+            }
             let state = State::load(&path)?;
-            println!("server:   {}", state.server_url);
-            println!("username: {}", state.username);
+            println!("server:      {}", state.server_url);
+            println!("username:    {}", state.username);
             println!(
-                "device:   {} ({})",
+                "device:      {} ({})",
                 state.device_name,
                 B64::encode(&state.device.id())
+            );
+            println!();
+            println!(
+                "account key: {}  (the same on all your devices)",
+                display_fingerprint(&state.account_key.fingerprint())
+            );
+            println!(
+                "server:      {}",
+                display_fingerprint(&state.identity.fingerprint())
+            );
+            println!(
+                "this device: {}",
+                display_fingerprint(&state.device.public().fingerprint())
             );
             print_login_command(&state);
             Ok(())
@@ -201,6 +230,40 @@ fn run() -> Result<()> {
             for (name, this) in account::device_names(&state)? {
                 println!("{name}{}", if this { "  (this device)" } else { "" });
             }
+            Ok(())
+        }
+        "revoke" => {
+            let id: Id = args
+                .positional
+                .first()
+                .and_then(|id| B64::decode(id))
+                .and_then(|id| id.try_into().ok())
+                .ok_or("revoke needs a device id, as `pastazzo-sync status --json` shows it")?;
+            let state = State::load(&path)?;
+            Remote::new(&state.server_url).revoke_device(&state, &id)?;
+            if id == state.device.id() {
+                std::fs::remove_file(&path)
+                    .map_err(|e| format!("remove {}: {e}", path.display()))?;
+                println!("this device was removed and logged out");
+            } else {
+                println!("device removed: it can't sync with this account any more");
+            }
+            Ok(())
+        }
+        "clear" => {
+            clipboard::platform()?.clear_history()?;
+            if args.option("everywhere").is_none() {
+                println!("history cleared on this device");
+                return Ok(());
+            }
+            let state = State::load(&path)?;
+            Remote::new(&state.server_url).delete_items(&state)?;
+            // The other devices clear theirs when they get this.
+            daemon::Daemon::new(state, &path, Box::new(NoClipboard))
+                .send(&Content::ClearHistory)?;
+            println!(
+                "history cleared here and on the server; the other devices clear theirs as they sync"
+            );
             Ok(())
         }
         "logout" => {
@@ -243,10 +306,48 @@ impl clipboard::Clipboard for NoClipboard {
     fn poll(&mut self) -> Vec<Content> {
         Vec::new()
     }
-    fn apply(&mut self, _: &Content) -> Result<()> {
+    fn apply(&mut self, _: &Content, _: &str) -> Result<()> {
         Ok(())
     }
-    fn remember(&mut self, _: &Content) -> Result<()> {
+    fn remember(&mut self, _: &Content, _: &str) -> Result<()> {
         Ok(())
     }
+    fn clear_history(&mut self) -> Result<()> {
+        Ok(())
+    }
+}
+
+/// Everything the settings screens show, as JSON. Never fails: problems are
+/// reported inside, so the UIs always get something to render.
+fn status_json(path: &std::path::Path) -> String {
+    use serde_json::json;
+    let state = match State::load(path) {
+        Ok(state) => state,
+        Err(error) => return json!({ "logged_in": false, "error": error }).to_string(),
+    };
+    let (devices, devices_error) = match account::devices(&state) {
+        Ok(devices) => (devices, None),
+        Err(error) => (Vec::new(), Some(error)),
+    };
+    json!({
+        "logged_in": true,
+        "server_url": state.server_url,
+        "username": state.username,
+        "server_fingerprint": display_fingerprint(&state.identity.fingerprint()),
+        "account_key_fingerprint": display_fingerprint(&state.account_key.fingerprint()),
+        "key_epoch": state.account_key.epoch(),
+        "this_device": {
+            "id": B64::encode(&state.device.id()),
+            "name": state.device_name,
+            "fingerprint": display_fingerprint(&state.device.public().fingerprint()),
+        },
+        "devices": devices.iter().map(|device| json!({
+            "id": B64::encode(&device.id),
+            "name": device.name,
+            "fingerprint": display_fingerprint(&device.fingerprint),
+            "this": device.this,
+        })).collect::<Vec<_>>(),
+        "devices_error": devices_error,
+    })
+    .to_string()
 }

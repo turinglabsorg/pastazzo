@@ -1,11 +1,15 @@
 import Adw from 'gi://Adw';
 import Gdk from 'gi://Gdk';
+import Gio from 'gi://Gio';
+import GLib from 'gi://GLib';
+import GObject from 'gi://GObject';
 import Gtk from 'gi://Gtk';
 
 import {ExtensionPreferences} from 'resource:///org/gnome/Shell/Extensions/js/extensions/prefs.js';
 
 const KEY_TOGGLE = 'toggle-pastazzo';
 const DEFAULT_SHORTCUT = '<Shift><Alt>v';
+const SYNC = `${GLib.get_home_dir()}/.local/bin/pastazzo-sync`;
 
 export default class PastazzoPreferences extends ExtensionPreferences {
     fillPreferencesWindow(window) {
@@ -53,7 +57,177 @@ export default class PastazzoPreferences extends ExtensionPreferences {
         group.add(row);
         page.add(group);
         window.add(page);
+        window.add(new SyncPage(window));
     }
+}
+
+// Runs pastazzo-sync and hands its output, or its error, to the callback.
+function runSync(args, callback) {
+    try {
+        const process = Gio.Subprocess.new([SYNC, ...args],
+            Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_PIPE);
+        process.communicate_utf8_async(null, null, (_process, result) => {
+            try {
+                const [, stdout, stderr] = process.communicate_utf8_finish(result);
+                callback(process.get_successful() ? null : (stderr || 'failed').trim(), stdout);
+            } catch (error) {
+                callback(error.message, '');
+            }
+        });
+    } catch (error) {
+        callback(`${SYNC} is missing: install pastazzo-sync to sync this device`, '');
+    }
+}
+
+function escape(text) {
+    return GLib.markup_escape_text(text || '', -1);
+}
+
+// Sync: the account, its devices, the key fingerprints and the history.
+const SyncPage = GObject.registerClass(
+class SyncPage extends Adw.PreferencesPage {
+    _init(window) {
+        super._init({title: 'Sync', icon_name: 'emblem-synchronizing-symbolic'});
+        this._window = window;
+        this._groups = [];
+        this._refresh();
+    }
+
+    _setGroups(groups) {
+        this._groups.forEach(group => this.remove(group));
+        this._groups = groups;
+        groups.forEach(group => this.add(group));
+    }
+
+    _refresh() {
+        const loading = new Adw.PreferencesGroup({title: 'Sync', description: 'Loading…'});
+        this._setGroups([loading]);
+        runSync(['status', '--json'], (error, output) => {
+            let status = null;
+            try {
+                status = JSON.parse(output);
+            } catch (_error) {
+                status = {logged_in: false, error: error || 'unexpected answer from pastazzo-sync'};
+            }
+            this._render(status);
+        });
+    }
+
+    _render(status) {
+        if (!status.logged_in) {
+            this._setGroups([new Adw.PreferencesGroup({
+                title: 'Sync',
+                description: 'This device isn\'t syncing. Set it up with `pastazzo-sync join` (new account) ' +
+                    'or `pastazzo-sync login` (another device of an account).',
+            })]);
+            return;
+        }
+
+        const account = new Adw.PreferencesGroup({title: 'Account'});
+        account.add(infoRow('Username', status.username));
+        account.add(infoRow('Server', status.server_url));
+        account.add(infoRow('This device', status.this_device.name));
+
+        const devices = new Adw.PreferencesGroup({
+            title: 'Devices',
+            description: 'Devices syncing with this account. Each one shows its key fingerprint: ' +
+                'it must match what that device shows for itself.',
+        });
+        if (status.devices_error)
+            devices.add(infoRow('Couldn\'t reach the server', status.devices_error));
+        for (const device of status.devices || []) {
+            const row = new Adw.ActionRow({
+                title: escape(device.this ? `${device.name} (this device)` : device.name),
+                subtitle: `<tt>${escape(device.fingerprint)}</tt>`,
+            });
+            const remove = new Gtk.Button({
+                label: device.this ? 'Log Out' : 'Remove',
+                valign: Gtk.Align.CENTER,
+                css_classes: ['destructive-action'],
+            });
+            remove.connect('clicked', () => this._removeDevice(device));
+            row.add_suffix(remove);
+            devices.add(row);
+        }
+
+        const keys = new Adw.PreferencesGroup({
+            title: 'End-to-End Encryption',
+            description: 'Your clipboard is encrypted on your devices with the account key, which never ' +
+                'leaves them. Its fingerprint must be the same on every device: the server only ever ' +
+                'stores ciphertext it can\'t read.',
+        });
+        keys.add(fingerprintRow('Account key', status.account_key_fingerprint));
+        keys.add(fingerprintRow('Server', status.server_fingerprint));
+        keys.add(fingerprintRow('This device', status.this_device.fingerprint));
+
+        const history = new Adw.PreferencesGroup({title: 'History'});
+        history.add(this._actionRow('Clear on this device', 'Empties the clipboard history here.',
+            'Clear', () => this._clear(false)));
+        history.add(this._actionRow('Clear on all devices',
+            'Empties the history here, on the server and on every other device as it syncs.',
+            'Clear Everywhere', () => this._clear(true)));
+
+        this._setGroups([account, devices, keys, history]);
+    }
+
+    _actionRow(title, subtitle, label, onClicked) {
+        const row = new Adw.ActionRow({title, subtitle});
+        const button = new Gtk.Button({label, valign: Gtk.Align.CENTER, css_classes: ['destructive-action']});
+        button.connect('clicked', onClicked);
+        row.add_suffix(button);
+        return row;
+    }
+
+    _confirm(heading, body, action, onConfirmed) {
+        const dialog = new Adw.AlertDialog({heading, body});
+        dialog.add_response('cancel', 'Cancel');
+        dialog.add_response('confirm', action);
+        dialog.set_response_appearance('confirm', Adw.ResponseAppearance.DESTRUCTIVE);
+        dialog.connect('response', (_dialog, response) => {
+            if (response === 'confirm')
+                onConfirmed();
+        });
+        dialog.present(this._window);
+    }
+
+    _report(error, success) {
+        this._window.add_toast(new Adw.Toast({title: error ? `Failed: ${error}` : success}));
+        this._refresh();
+    }
+
+    _removeDevice(device) {
+        const body = device.this
+            ? 'This device stops syncing and forgets the account. You can log in again later.'
+            : `${device.name} stops syncing with this account: it can't send or receive anything any more.`;
+        this._confirm(device.this ? 'Log out of sync?' : `Remove ${device.name}?`, body,
+            device.this ? 'Log Out' : 'Remove',
+            () => runSync(['revoke', device.id], error =>
+                this._report(error, device.this ? 'Logged out' : `${device.name} removed`)));
+    }
+
+    _clear(everywhere) {
+        const run = () => runSync(everywhere ? ['clear', '--everywhere'] : ['clear'], error =>
+            this._report(error, everywhere ? 'History cleared on all devices' : 'History cleared'));
+        if (!everywhere) {
+            run();
+            return;
+        }
+        this._confirm('Clear the history on all devices?',
+            'Every device empties its clipboard history as it syncs, and the server deletes what it stores.',
+            'Clear Everywhere', run);
+    }
+});
+
+function infoRow(title, value) {
+    const row = new Adw.ActionRow({title, subtitle: escape(value)});
+    row.add_css_class('property');
+    return row;
+}
+
+function fingerprintRow(title, fingerprint) {
+    const row = new Adw.ActionRow({title, subtitle: `<tt>${escape(fingerprint)}</tt>`, subtitle_selectable: true});
+    row.add_css_class('property');
+    return row;
 }
 
 function captureShortcut(window, button, settings, onDone) {

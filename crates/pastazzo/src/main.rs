@@ -7,6 +7,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 const MAX_ITEMS: usize = 250;
 const MAX_TEXT_BYTES: usize = 1024 * 1024;
 const MAX_IMAGE_BYTES: usize = 25 * 1024 * 1024;
+const MAX_ORIGIN_CHARS: usize = 128;
 
 #[derive(Debug, Clone)]
 struct Item {
@@ -16,6 +17,8 @@ struct Item {
     mime: String,
     text: String,
     path: String,
+    /// The device the item was synced from; empty for local copies.
+    origin: String,
 }
 
 fn main() {
@@ -30,10 +33,17 @@ fn run() -> Result<(), String> {
     let command = args.next().unwrap_or_else(|| "search".to_string());
 
     match command.as_str() {
-        "add" => add_from_stdin(),
+        "add" => {
+            let (_, origin) = split_origin(args.collect())?;
+            add_from_stdin(&origin)
+        }
         "add-image" => {
-            let mime = args.next().unwrap_or_else(|| "image/png".to_string());
-            add_image_from_stdin(&mime)
+            let (positional, origin) = split_origin(args.collect())?;
+            let mime = positional
+                .first()
+                .cloned()
+                .unwrap_or_else(|| "image/png".to_string());
+            add_image_from_stdin(&mime, &origin)
         }
         "search" => {
             let query = args.collect::<Vec<_>>().join(" ");
@@ -68,7 +78,22 @@ fn run() -> Result<(), String> {
     }
 }
 
-fn add_from_stdin() -> Result<(), String> {
+/// Splits `--origin <device>` from the other arguments.
+fn split_origin(args: Vec<String>) -> Result<(Vec<String>, String), String> {
+    let mut positional = Vec::new();
+    let mut origin = String::new();
+    let mut args = args.into_iter();
+    while let Some(arg) = args.next() {
+        if arg == "--origin" {
+            origin = args.next().ok_or("--origin needs a device name")?;
+        } else {
+            positional.push(arg);
+        }
+    }
+    Ok((positional, origin))
+}
+
+fn add_from_stdin(origin: &str) -> Result<(), String> {
     let mut bytes = Vec::new();
     io::stdin()
         .take((MAX_TEXT_BYTES + 1) as u64)
@@ -97,13 +122,14 @@ fn add_from_stdin() -> Result<(), String> {
     let mut file = fs::File::create(&path).map_err(|err| format!("create item: {err}"))?;
     file.write_all(text.as_bytes())
         .map_err(|err| format!("write item: {err}"))?;
+    write_origin(&dir, &id, origin)?;
 
     prune_history(&dir)?;
     println!("{id}");
     Ok(())
 }
 
-fn add_image_from_stdin(mime: &str) -> Result<(), String> {
+fn add_image_from_stdin(mime: &str, origin: &str) -> Result<(), String> {
     let mut bytes = Vec::new();
     io::stdin()
         .take((MAX_IMAGE_BYTES + 1) as u64)
@@ -132,6 +158,7 @@ fn add_image_from_stdin(mime: &str) -> Result<(), String> {
     let mut file = fs::File::create(&path).map_err(|err| format!("create image item: {err}"))?;
     file.write_all(&bytes)
         .map_err(|err| format!("write image item: {err}"))?;
+    write_origin(&dir, &id, origin)?;
 
     prune_history(&dir)?;
     println!("{id}");
@@ -194,7 +221,10 @@ fn read_items() -> Result<Vec<Item>, String> {
     for entry in entries {
         let entry = entry.map_err(|err| format!("read history entry: {err}"))?;
         let path = entry.path();
-        let extension = path.extension().and_then(|ext| ext.to_str()).unwrap_or_default();
+        let extension = path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .unwrap_or_default();
         if extension != "txt" && mime_from_image_extension(extension).is_none() {
             continue;
         }
@@ -204,7 +234,10 @@ fn read_items() -> Result<Vec<Item>, String> {
             None => continue,
         };
 
-        let timestamp = match id.split_once('-').and_then(|(ts, _)| ts.parse::<u128>().ok()) {
+        let timestamp = match id
+            .split_once('-')
+            .and_then(|(ts, _)| ts.parse::<u128>().ok())
+        {
             Some(timestamp) => timestamp,
             None => continue,
         };
@@ -213,6 +246,7 @@ fn read_items() -> Result<Vec<Item>, String> {
             let text = fs::read_to_string(&path).unwrap_or_default();
             if !text.trim().is_empty() {
                 items.push(Item {
+                    origin: read_origin(&dir, &id),
                     id,
                     timestamp,
                     kind: "text".to_string(),
@@ -223,6 +257,7 @@ fn read_items() -> Result<Vec<Item>, String> {
             }
         } else if let Some(mime) = mime_from_image_extension(extension) {
             items.push(Item {
+                origin: read_origin(&dir, &id),
                 id,
                 timestamp,
                 kind: "image".to_string(),
@@ -245,7 +280,7 @@ fn print_items_json(items: &[Item]) -> Result<(), String> {
         }
 
         print!(
-            "{{\"id\":\"{}\",\"timestamp\":{},\"kind\":\"{}\",\"mime\":\"{}\",\"preview\":\"{}\",\"text\":\"{}\",\"path\":\"{}\"}}",
+            "{{\"id\":\"{}\",\"timestamp\":{},\"kind\":\"{}\",\"mime\":\"{}\",\"preview\":\"{}\",\"text\":\"{}\",\"path\":\"{}\",\"origin\":\"{}\"}}",
             json_escape(&item.id),
             item.timestamp,
             json_escape(&item.kind),
@@ -253,6 +288,7 @@ fn print_items_json(items: &[Item]) -> Result<(), String> {
             json_escape(&item_preview(item)),
             json_escape(&item.text),
             json_escape(&item.path),
+            json_escape(&item.origin),
         );
     }
     println!("]");
@@ -286,7 +322,10 @@ fn preview(text: &str) -> String {
 
 fn item_preview(item: &Item) -> String {
     if item.kind == "image" {
-        return format!("{} image", item.mime.strip_prefix("image/").unwrap_or("clipboard"));
+        return format!(
+            "{} image",
+            item.mime.strip_prefix("image/").unwrap_or("clipboard")
+        );
     }
 
     preview(&item.text)
@@ -294,10 +333,10 @@ fn item_preview(item: &Item) -> String {
 
 fn searchable_text(item: &Item) -> String {
     if item.kind == "image" {
-        return format!("image {} {}", item.mime, item.id);
+        return format!("image {} {} {}", item.mime, item.id, item.origin);
     }
 
-    item.text.clone()
+    format!("{}\n{}", item.text, item.origin)
 }
 
 fn json_escape(input: &str) -> String {
@@ -341,29 +380,73 @@ fn prune_history(dir: &Path) -> Result<(), String> {
         .filter_map(Result::ok)
         .map(|entry| entry.path())
         .filter(|path| {
-            let extension = path.extension().and_then(|ext| ext.to_str()).unwrap_or_default();
+            let extension = path
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .unwrap_or_default();
             extension == "txt" || mime_from_image_extension(extension).is_some()
         })
         .collect::<Vec<_>>();
 
     files.sort_by(|a, b| {
-        let a = a.file_name().and_then(|name| name.to_str()).unwrap_or_default();
-        let b = b.file_name().and_then(|name| name.to_str()).unwrap_or_default();
+        let a = a
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or_default();
+        let b = b
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or_default();
         b.cmp(a)
     });
 
-    for path in files.into_iter().skip(MAX_ITEMS) {
+    for path in files.iter().skip(MAX_ITEMS) {
         let _ = fs::remove_file(path);
+    }
+
+    // Origins of items that are gone.
+    let kept: std::collections::HashSet<_> = files
+        .iter()
+        .take(MAX_ITEMS)
+        .filter_map(|path| path.file_stem().map(|stem| stem.to_os_string()))
+        .collect();
+    for entry in fs::read_dir(dir).map_err(|err| format!("read history dir: {err}"))? {
+        let path = entry
+            .map_err(|err| format!("read history entry: {err}"))?
+            .path();
+        let orphan = path.extension().is_some_and(|ext| ext == "origin")
+            && path.file_stem().is_some_and(|stem| !kept.contains(stem));
+        if orphan {
+            let _ = fs::remove_file(path);
+        }
     }
 
     Ok(())
 }
 
-fn item_path(id: &str) -> Result<PathBuf, String> {
-    if !id
+fn origin_path(dir: &Path, id: &str) -> PathBuf {
+    dir.join(format!("{id}.origin"))
+}
+
+/// Remembers which device an item was synced from, next to the item.
+fn write_origin(dir: &Path, id: &str, origin: &str) -> Result<(), String> {
+    let origin: String = origin
         .chars()
-        .all(|ch| ch.is_ascii_hexdigit() || ch == '-')
-    {
+        .filter(|ch| !ch.is_control())
+        .take(MAX_ORIGIN_CHARS)
+        .collect();
+    if origin.trim().is_empty() {
+        return Ok(());
+    }
+    fs::write(origin_path(dir, id), origin.trim()).map_err(|err| format!("write origin: {err}"))
+}
+
+fn read_origin(dir: &Path, id: &str) -> String {
+    fs::read_to_string(origin_path(dir, id)).unwrap_or_default()
+}
+
+fn item_path(id: &str) -> Result<PathBuf, String> {
+    if !id.chars().all(|ch| ch.is_ascii_hexdigit() || ch == '-') {
         return Err("invalid item id".to_string());
     }
 
@@ -371,10 +454,7 @@ fn item_path(id: &str) -> Result<PathBuf, String> {
 }
 
 fn touch_item(id: &str) -> Result<String, String> {
-    if !id
-        .chars()
-        .all(|ch| ch.is_ascii_hexdigit() || ch == '-')
-    {
+    if !id.chars().all(|ch| ch.is_ascii_hexdigit() || ch == '-') {
         return Err("invalid item id".to_string());
     }
 
@@ -383,7 +463,14 @@ fn touch_item(id: &str) -> Result<String, String> {
         .map_err(|err| format!("read history dir: {err}"))?
         .filter_map(Result::ok)
         .map(|entry| entry.path())
-        .find(|path| path.file_stem().and_then(|name| name.to_str()) == Some(id))
+        .find(|path| {
+            let extension = path
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .unwrap_or_default();
+            path.file_stem().and_then(|name| name.to_str()) == Some(id)
+                && (extension == "txt" || mime_from_image_extension(extension).is_some())
+        })
         .ok_or("item not found")?;
 
     let (_, hash) = id.split_once('-').ok_or("invalid item id")?;
@@ -396,6 +483,7 @@ fn touch_item(id: &str) -> Result<String, String> {
     let new_path = dir.join(format!("{new_id}.{extension}"));
 
     fs::rename(&current_path, &new_path).map_err(|err| format!("touch item: {err}"))?;
+    let _ = fs::rename(origin_path(&dir, id), origin_path(&dir, &new_id));
     prune_history(&dir)?;
     Ok(new_id)
 }

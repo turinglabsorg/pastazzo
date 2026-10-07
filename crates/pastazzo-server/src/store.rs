@@ -305,6 +305,14 @@ impl Store {
         Ok(Some(seq))
     }
 
+    /// Deletes every item of an account.
+    pub fn delete_items(&self, account: &Id) -> rusqlite::Result<usize> {
+        self.db.execute(
+            "DELETE FROM items WHERE account = ?1",
+            params![&account[..]],
+        )
+    }
+
     /// Items after `cursor`, oldest first, at most `limit`.
     pub fn items_after(
         &self,

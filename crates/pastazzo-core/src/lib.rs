@@ -38,6 +38,30 @@ pub type Id = [u8; 16];
 pub trait Rng: rand::RngCore + rand::CryptoRng {}
 impl<T: rand::RngCore + rand::CryptoRng> Rng for T {}
 
+/// A fingerprint as people compare it: the first 16 bytes in uppercase hex,
+/// in groups of four (`3F9A 12C4 ...`).
+pub fn display_fingerprint(bytes: &[u8]) -> String {
+    bytes
+        .iter()
+        .take(16)
+        .map(|b| format!("{b:02X}"))
+        .collect::<Vec<_>>()
+        .chunks(2)
+        .map(|pair| pair.concat())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+#[cfg(test)]
+#[test]
+fn fingerprints_display_in_groups() {
+    assert_eq!(
+        display_fingerprint(&[0x3f, 0x9a, 0x12, 0xc4, 0, 1]),
+        "3F9A 12C4 0001"
+    );
+    assert_eq!(display_fingerprint(&[0xab; 32]).len(), 8 * 4 + 7);
+}
+
 /// Generates a random [`Id`].
 pub fn random_id(rng: &mut impl Rng) -> Id {
     let mut id = [0u8; 16];

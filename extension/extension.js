@@ -9,6 +9,7 @@ import St from 'gi://St';
 
 import {Extension} from 'resource:///org/gnome/shell/extensions/extension.js';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
+import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
 
 const CLIPBOARD_TYPE = St.ClipboardType.CLIPBOARD;
 const STORE = `${GLib.get_home_dir()}/.local/bin/pastazzo`;
@@ -24,6 +25,9 @@ const DOUBLE_CLICK_DELAY_MS = 220;
 const SCROLL_ANIMATION_MS = 160;
 const IMAGE_MIMES = ['image/png', 'image/jpeg', 'image/jpg', 'image/webp', 'image/gif', 'image/bmp', 'image/tiff'];
 const FEEDBACK_SOUND = '/usr/share/sounds/Yaru/stereo/message.oga';
+const TRANSFER_LABEL_WIDTH = 260;
+// A transfers.json not updated for this long belongs to a daemon that stopped.
+const TRANSFER_STALE_MS = 60 * 1000;
 
 const PastazzoPanel = GObject.registerClass(
 class PastazzoPanel extends St.Widget {
@@ -45,6 +49,7 @@ class PastazzoPanel extends St.Widget {
         this._searchTimeoutId = 0;
         this._stageCapturedEventId = 0;
         this._openPreferences = openPreferences;
+        this._localDevice = '';
 
         this._panel = new St.BoxLayout({
             vertical: true,
@@ -74,6 +79,14 @@ class PastazzoPanel extends St.Widget {
             track_hover: true,
         });
         this._header.add_child(this._entry);
+
+        this._transferLabel = new St.Label({
+            style_class: 'pastebar-transfer',
+            y_align: Clutter.ActorAlign.CENTER,
+            visible: false,
+        });
+        this._transferLabel.clutter_text.ellipsize = Pango.EllipsizeMode.END;
+        this._header.add_child(this._transferLabel);
 
         this._scrollView = new St.ScrollView({
             style_class: 'pastebar-scroll',
@@ -253,6 +266,17 @@ class PastazzoPanel extends St.Widget {
         });
     }
 
+    // The name of this device, once it syncs: local copies show it as origin.
+    setLocalDevice(name) {
+        this._localDevice = name || '';
+    }
+
+    setTransfer(text) {
+        this._transferLabel.text = text || '';
+        this._transferLabel.visible = Boolean(text);
+        this._relayout();
+    }
+
     _showPreferences() {
         this._clearClickPending();
         this.hidePanel();
@@ -315,12 +339,15 @@ class PastazzoPanel extends St.Widget {
                 body.clutter_text.line_wrap_mode = Pango.WrapMode.WORD_CHAR;
             }
 
+            const details = item.kind === 'image'
+                ? (item.mime || 'image')
+                : `${(item.text || '').length} characters`;
+            const origin = item.origin || this._localDevice;
             const meta = new St.Label({
                 style_class: 'pastebar-card-meta',
-                text: item.kind === 'image'
-                    ? (item.mime || 'image')
-                    : `${(item.text || '').length} characters`,
+                text: origin ? `${details} · ${origin}` : details,
             });
+            meta.clutter_text.ellipsize = Pango.EllipsizeMode.END;
 
             content.add_child(title);
             content.add_child(body);
@@ -531,7 +558,9 @@ class PastazzoPanel extends St.Widget {
 
         const contentWidth = width - BAR_PADDING * 2;
         const contentHeight = height - BAR_PADDING * 2;
-        const searchWidth = contentWidth - TOOLBAR_WIDTH - CARD_GAP;
+        const transferWidth = this._transferLabel.visible ? TRANSFER_LABEL_WIDTH + CARD_GAP : 0;
+        const searchWidth = contentWidth - TOOLBAR_WIDTH - CARD_GAP - transferWidth;
+        this._transferLabel.set_width(TRANSFER_LABEL_WIDTH);
 
         this._header.set_size(contentWidth, TOOL_BUTTON_SIZE);
         this._taskbar.set_size(TOOLBAR_WIDTH, TOOL_BUTTON_SIZE);
@@ -578,6 +607,109 @@ export default class PastazzoExtension extends Extension {
         });
         this._pollClipboard();
         this._watchInbox();
+        this._watchSyncStatus();
+    }
+
+    // pastazzo-sync reports this device in sync/status.json and transfers in
+    // progress in sync/transfers.json.
+    _watchSyncStatus() {
+        this._syncDir = Gio.File.new_for_path(`${GLib.get_user_data_dir()}/pastazzo/sync`);
+        try {
+            this._syncDir.make_directory_with_parents(null);
+        } catch (error) {
+            if (!error.matches(Gio.IOErrorEnum, Gio.IOErrorEnum.EXISTS))
+                logError(error, 'Pastazzo failed to create the sync status directory');
+        }
+        try {
+            this._syncMonitor = this._syncDir.monitor_directory(Gio.FileMonitorFlags.WATCH_MOVES, null);
+            this._syncChangedId = this._syncMonitor.connect('changed', () => this._scheduleSyncStatus());
+        } catch (error) {
+            logError(error, 'Pastazzo failed to watch the sync status');
+        }
+        // Also clears an indicator left by a daemon that stopped.
+        this._syncTimerId = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, 5, () => {
+            this._readSyncStatus();
+            return GLib.SOURCE_CONTINUE;
+        });
+        this._readSyncStatus();
+    }
+
+    _unwatchSyncStatus() {
+        if (this._syncTimerId) {
+            GLib.Source.remove(this._syncTimerId);
+            this._syncTimerId = 0;
+        }
+        if (this._syncStatusTimeoutId) {
+            GLib.Source.remove(this._syncStatusTimeoutId);
+            this._syncStatusTimeoutId = 0;
+        }
+        if (this._syncMonitor) {
+            this._syncMonitor.disconnect(this._syncChangedId);
+            this._syncMonitor.cancel();
+            this._syncMonitor = null;
+        }
+        this._indicator?.destroy();
+        this._indicator = null;
+        this._syncDir = null;
+    }
+
+    _scheduleSyncStatus() {
+        if (this._syncStatusTimeoutId)
+            return;
+        this._syncStatusTimeoutId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 50, () => {
+            this._syncStatusTimeoutId = 0;
+            this._readSyncStatus();
+            return GLib.SOURCE_REMOVE;
+        });
+    }
+
+    _readJson(name) {
+        try {
+            const [, bytes] = this._syncDir.get_child(name).load_contents(null);
+            return JSON.parse(new TextDecoder().decode(bytes));
+        } catch (_error) {
+            return null;
+        }
+    }
+
+    _readSyncStatus() {
+        if (!this._syncDir)
+            return;
+        this._panel?.setLocalDevice(this._readJson('status.json')?.device_name);
+
+        const status = this._readJson('transfers.json');
+        const fresh = status && Date.now() - (status.updated || 0) < TRANSFER_STALE_MS;
+        const text = fresh ? describeTransfers(status.transfers || []) : '';
+        this._panel?.setTransfer(text);
+        this._showIndicator(text);
+    }
+
+    _showIndicator(text) {
+        if (!text) {
+            this._indicator?.hide();
+            return;
+        }
+        if (!this._indicator) {
+            this._indicator = new PanelMenu.Button(0.0, 'Pastazzo sync', true);
+            const box = new St.BoxLayout({style_class: 'panel-status-menu-box'});
+            box.add_child(new St.Icon({
+                icon_name: 'edit-paste-symbolic',
+                style_class: 'system-status-icon',
+            }));
+            this._indicatorLabel = new St.Label({
+                y_align: Clutter.ActorAlign.CENTER,
+                style_class: 'pastazzo-indicator-label',
+            });
+            box.add_child(this._indicatorLabel);
+            this._indicator.add_child(box);
+            this._indicator.connect('button-press-event', () => {
+                this._panel?.showPanel();
+                return Clutter.EVENT_STOP;
+            });
+            Main.panel.addToStatusArea('pastazzo-sync', this._indicator);
+        }
+        this._indicatorLabel.text = text;
+        this._indicator.show();
     }
 
     // pastazzo-sync drops items received from other devices in the inbox:
@@ -674,6 +806,7 @@ export default class PastazzoExtension extends Extension {
     disable() {
         Main.wm.removeKeybinding('toggle-pastazzo');
         this._unwatchInbox();
+        this._unwatchSyncStatus();
 
         if (this._pollId) {
             GLib.Source.remove(this._pollId);
@@ -944,4 +1077,22 @@ function imageMimeFromPath(path) {
     if (lowered.endsWith('.tif') || lowered.endsWith('.tiff'))
         return 'image/tiff';
     return null;
+}
+
+// "Sending 45%", "Mac Pro 12%", "Mac Pro 3.4 MB…" for the transfers in progress.
+function describeTransfers(transfers) {
+    return transfers.map(transfer => {
+        const percent = transfer.size > 0 ? Math.floor(100 * transfer.done / transfer.size) : 0;
+        const arrow = transfer.direction === 'send' ? '↑' : '↓';
+        const who = transfer.direction === 'send' ? 'Sending' : (transfer.device || 'Receiving');
+        return `${arrow} ${who} ${percent}% of ${formatSize(transfer.size)}`;
+    }).join('   ');
+}
+
+function formatSize(bytes) {
+    if (bytes >= 1024 * 1024)
+        return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+    if (bytes >= 1024)
+        return `${Math.round(bytes / 1024)} KB`;
+    return `${bytes} B`;
 }

@@ -9,17 +9,18 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use axum::body::Bytes;
+use axum::body::{Body, Bytes};
 use axum::extract::{DefaultBodyLimit, Path, Query, State};
 use axum::http::{HeaderMap, Method, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post, put};
 use axum::{Json, Router};
+use http_body_util::BodyExt;
 use pastazzo_core::account::WrappedAccountKey;
 use pastazzo_core::api::{
-    self, B64, DeviceRecords, ErrorBody, ItemPosted, ItemsPage, LoginFinish, LoginFinished,
-    LoginStart, LoginStarted, RegisterFinish, RegisterStart, RegisterStarted, Registration,
-    ServerInfo,
+    self, B64, DeviceRecords, ErrorBody, ItemAnnounce, ItemPosted, ItemsPage, LoginFinish,
+    LoginFinished, LoginStart, LoginStarted, PendingTransfer, RegisterFinish, RegisterStart,
+    RegisterStarted, Registration, ServerInfo,
 };
 use pastazzo_core::device::{DevicePublic, SealedDeviceRecord};
 use pastazzo_core::invite::InviteVerifier;
@@ -43,6 +44,11 @@ const MAX_PAGE_ITEMS: usize = 50;
 /// How long a started registration or login may wait for its second step.
 const PENDING_TTL_MS: u64 = 2 * 60 * 1000;
 /// Registration and login attempts allowed per username in [`ATTEMPT_WINDOW_MS`].
+/// Announced uploads are forgotten after this long without progress.
+const TRANSFER_TTL_MS: u64 = 10 * 60 * 1000;
+const MAX_TRANSFERS_PER_ACCOUNT: usize = 8;
+/// How often upload progress is passed on to the other devices.
+const PROGRESS_INTERVAL_MS: u64 = 200;
 const MAX_ATTEMPTS: usize = 20;
 const ATTEMPT_WINDOW_MS: u64 = 10 * 60 * 1000;
 
@@ -57,6 +63,21 @@ pub struct App {
     nonces: Mutex<HashMap<(Id, [u8; 16]), u64>>,
     attempts: Mutex<HashMap<String, Vec<u64>>>,
     waiters: Mutex<HashMap<Id, Arc<Notify>>>,
+    transfers: Mutex<HashMap<Id, Transfers>>,
+}
+
+/// An account's announced uploads, with a version that changes with them.
+#[derive(Default)]
+struct Transfers {
+    version: u64,
+    pending: HashMap<Id, Pending>,
+}
+
+struct Pending {
+    device: Id,
+    size: u64,
+    received: u64,
+    updated_at: u64,
 }
 
 struct PendingRegistration {
@@ -132,6 +153,7 @@ impl App {
             nonces: Mutex::default(),
             attempts: Mutex::default(),
             waiters: Mutex::default(),
+            transfers: Mutex::default(),
         }
     }
 
@@ -154,6 +176,106 @@ impl App {
 
     fn waiter(&self, account: &Id) -> Arc<Notify> {
         lock(&self.waiters).entry(*account).or_default().clone()
+    }
+
+    /// Changes an account's transfers and wakes its devices' long polls.
+    fn update_transfers(&self, account: &Id, change: impl FnOnce(&mut Transfers)) {
+        {
+            let mut transfers = lock(&self.transfers);
+            let entry = transfers.entry(*account).or_default();
+            change(entry);
+            entry.version += 1;
+        }
+        self.waiter(account).notify_waiters();
+    }
+
+    fn announce(&self, account: &Id, device: &Id, item: &Id, size: u64) {
+        let now = now();
+        self.update_transfers(account, |transfers| {
+            transfers
+                .pending
+                .retain(|_, p| now.saturating_sub(p.updated_at) < TRANSFER_TTL_MS);
+            if transfers.pending.len() >= MAX_TRANSFERS_PER_ACCOUNT
+                && let Some(oldest) = transfers
+                    .pending
+                    .iter()
+                    .min_by_key(|(_, p)| p.updated_at)
+                    .map(|(id, _)| *id)
+            {
+                transfers.pending.remove(&oldest);
+            }
+            transfers.pending.insert(
+                *item,
+                Pending {
+                    device: *device,
+                    size,
+                    received: 0,
+                    updated_at: now,
+                },
+            );
+        });
+    }
+
+    fn is_announced(&self, account: &Id, device: &Id, item: &Id) -> bool {
+        lock(&self.transfers)
+            .get(account)
+            .and_then(|t| t.pending.get(item))
+            .is_some_and(|p| p.device == *device)
+    }
+
+    fn progress(&self, account: &Id, item: &Id, received: u64) {
+        let now = now();
+        self.update_transfers(account, |transfers| {
+            if let Some(pending) = transfers.pending.get_mut(item) {
+                pending.received = received.min(pending.size);
+                pending.updated_at = now;
+            }
+        });
+    }
+
+    fn finish_transfer(&self, account: &Id, item: &Id) {
+        self.update_transfers(account, |transfers| {
+            transfers.pending.remove(item);
+        });
+    }
+
+    fn transfers(&self, account: &Id) -> (u64, Vec<PendingTransfer>) {
+        let now = now();
+        let transfers = lock(&self.transfers);
+        let Some(transfers) = transfers.get(account) else {
+            return (0, Vec::new());
+        };
+        let pending = transfers
+            .pending
+            .iter()
+            .filter(|(_, p)| now.saturating_sub(p.updated_at) < TRANSFER_TTL_MS)
+            .map(|(item, p)| PendingTransfer {
+                device: B64(p.device.to_vec()),
+                item: B64(item.to_vec()),
+                size: p.size,
+                received: p.received,
+            })
+            .collect();
+        (transfers.version, pending)
+    }
+
+    /// The account and device a signed request claims to come from, before
+    /// its body has arrived: enough to refuse unknown or revoked devices
+    /// early. [`App::authenticate`] still checks everything at the end.
+    fn claimed_device(&self, headers: &HeaderMap) -> ApiResult<(Id, Id)> {
+        let device_id: Id = headers
+            .get(api::HEADER_DEVICE)
+            .and_then(|v| v.to_str().ok())
+            .and_then(B64::decode)
+            .and_then(|v| v.try_into().ok())
+            .ok_or(bad("missing signature headers"))?;
+        let device = lock(&self.store)
+            .device(&device_id)?
+            .ok_or(ApiError(StatusCode::UNAUTHORIZED, "unknown device"))?;
+        if device.revoked {
+            return Err(ApiError(StatusCode::UNAUTHORIZED, "device revoked"));
+        }
+        Ok((device.account, device_id))
     }
 
     /// Checks a signed request and returns the account and device it comes
@@ -225,7 +347,11 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/v1/login/finish", post(login_finish))
         .route("/v1/devices", get(list_devices))
         .route("/v1/devices/{id}", put(put_device).delete(revoke_device))
-        .route("/v1/items", post(post_item).get(get_items))
+        .route(
+            "/v1/items",
+            post(post_item).get(get_items).delete(delete_items),
+        )
+        .route("/v1/items/announce", post(announce_item))
         .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
         .with_state(app)
 }
@@ -474,15 +600,83 @@ async fn revoke_device(
     }
 }
 
-async fn post_item(
+async fn announce_item(
     State(app): State<Arc<App>>,
     method: Method,
     uri: Uri,
     headers: HeaderMap,
     body: Bytes,
-) -> ApiResult<Json<ItemPosted>> {
+) -> ApiResult<StatusCode> {
     let (account, device_id) = app.authenticate(&method, &uri, &headers, &body)?;
-    let item = SealedItem::from_bytes(&body).map_err(|_| bad("invalid item"))?;
+    let announce: ItemAnnounce =
+        serde_json::from_slice(&body).map_err(|_| bad("invalid announcement"))?;
+    let item = id_from(&announce.id, "invalid item id")?;
+    if announce.size > MAX_BODY_BYTES as u64 {
+        return Err(ApiError(StatusCode::PAYLOAD_TOO_LARGE, "item too large"));
+    }
+    app.announce(&account, &device_id, &item, announce.size);
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Ends an announced transfer however the upload goes.
+struct TransferGuard {
+    app: Arc<App>,
+    account: Id,
+    item: Option<Id>,
+}
+
+impl Drop for TransferGuard {
+    fn drop(&mut self) {
+        if let Some(item) = self.item {
+            self.app.finish_transfer(&self.account, &item);
+        }
+    }
+}
+
+/// Receives an item. The body streams in so that, for an announced item,
+/// the other devices can follow its progress; nothing is stored before the
+/// whole request, signature included, checks out.
+async fn post_item(
+    State(app): State<Arc<App>>,
+    method: Method,
+    uri: Uri,
+    headers: HeaderMap,
+    mut body: Body,
+) -> ApiResult<Json<ItemPosted>> {
+    let (account, device_id) = app.claimed_device(&headers)?;
+    let mut guard = TransferGuard {
+        app: app.clone(),
+        account,
+        item: None,
+    };
+    let mut data = Vec::new();
+    let mut reported_at = 0;
+    while let Some(frame) = body.frame().await {
+        let frame = frame.map_err(|_| bad("upload interrupted"))?;
+        let Ok(chunk) = frame.into_data() else {
+            continue;
+        };
+        if data.len() + chunk.len() > MAX_BODY_BYTES {
+            return Err(ApiError(StatusCode::PAYLOAD_TOO_LARGE, "item too large"));
+        }
+        data.extend_from_slice(&chunk);
+        // version(1) || item id(16) || device(16): enough to recognize the announcement.
+        if guard.item.is_none() && data.len() >= 33 {
+            let item: Id = data[1..17].try_into().expect("16 bytes");
+            if app.is_announced(&account, &device_id, &item) {
+                guard.item = Some(item);
+            }
+        }
+        if let Some(item) = guard.item
+            && now().saturating_sub(reported_at) >= PROGRESS_INTERVAL_MS
+        {
+            app.progress(&account, &item, data.len() as u64);
+            reported_at = now();
+        }
+    }
+
+    let (account, device_id) = app.authenticate(&method, &uri, &headers, &data)?;
+    let item = SealedItem::from_bytes(&data).map_err(|_| bad("invalid item"))?;
     if item.header.device != device_id {
         return Err(ApiError(
             StatusCode::FORBIDDEN,
@@ -490,16 +684,31 @@ async fn post_item(
         ));
     }
     let cursor = lock(&app.store)
-        .add_item(&account, &item.header.id, &device_id, &body, now())?
+        .add_item(&account, &item.header.id, &device_id, &data, now())?
         .ok_or(ApiError(StatusCode::CONFLICT, "item already received"))?;
+    drop(guard);
     app.waiter(&account).notify_waiters();
     Ok(Json(ItemPosted { cursor }))
+}
+
+async fn delete_items(
+    State(app): State<Arc<App>>,
+    method: Method,
+    uri: Uri,
+    headers: HeaderMap,
+) -> ApiResult<StatusCode> {
+    let (account, _) = app.authenticate(&method, &uri, &headers, b"")?;
+    lock(&app.store).delete_items(&account)?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 #[derive(Deserialize)]
 struct ItemsQuery {
     after: Option<String>,
     wait: Option<u64>,
+    /// The `pending_version` the device last saw: with it, progress of
+    /// announced uploads also ends the wait.
+    pending: Option<u64>,
 }
 
 async fn get_items(
@@ -514,27 +723,39 @@ async fn get_items(
         // A new device only wants what comes next.
         Some("latest") => {
             let cursor = lock(&app.store).latest_cursor(&account)?;
+            let (pending_version, pending) = app.transfers(&account);
             return Ok(Json(ItemsPage {
                 cursor,
                 items: Vec::new(),
+                pending,
+                pending_version,
             }));
         }
         Some(after) => after.parse().map_err(|_| bad("invalid cursor"))?,
         None => 0,
     };
     let wait = Duration::from_secs(query.wait.unwrap_or(0).min(api::MAX_WAIT_SECONDS));
+    let deadline = tokio::time::Instant::now() + wait;
 
-    // Subscribe before looking, so an item arriving in between isn't missed.
     let waiter = app.waiter(&account);
-    let notified = waiter.notified();
-    tokio::pin!(notified);
-    notified.as_mut().enable();
+    let (items, pending_version, pending) = loop {
+        // Subscribe before looking, so nothing arriving in between is missed.
+        let notified = waiter.notified();
+        tokio::pin!(notified);
+        notified.as_mut().enable();
 
-    let mut items = lock(&app.store).items_after(&account, after, MAX_PAGE_ITEMS)?;
-    if items.is_empty() && !wait.is_zero() {
-        let _ = tokio::time::timeout(wait, notified).await;
-        items = lock(&app.store).items_after(&account, after, MAX_PAGE_ITEMS)?;
-    }
+        let items = lock(&app.store).items_after(&account, after, MAX_PAGE_ITEMS)?;
+        let (version, pending) = app.transfers(&account);
+        let progressed = query.pending.is_some_and(|seen| seen != version);
+        if !items.is_empty() || progressed || tokio::time::Instant::now() >= deadline {
+            break (items, version, pending);
+        }
+        if tokio::time::timeout_at(deadline, notified).await.is_err() {
+            let items = lock(&app.store).items_after(&account, after, MAX_PAGE_ITEMS)?;
+            let (version, pending) = app.transfers(&account);
+            break (items, version, pending);
+        }
+    };
 
     let mut cursor = after;
     let mut size = 0;
@@ -550,5 +771,7 @@ async fn get_items(
     Ok(Json(ItemsPage {
         cursor,
         items: page,
+        pending,
+        pending_version,
     }))
 }

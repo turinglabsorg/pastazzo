@@ -69,6 +69,8 @@ struct FakeClipboard {
     copies: Arc<Mutex<Vec<Content>>>,
     applied: Arc<Mutex<Vec<Content>>>,
     remembered: Arc<Mutex<Vec<Content>>>,
+    origins: Arc<Mutex<Vec<String>>>,
+    cleared: Arc<Mutex<usize>>,
     echo: bool,
 }
 
@@ -85,15 +87,21 @@ impl Clipboard for FakeClipboard {
     fn poll(&mut self) -> Vec<Content> {
         std::mem::take(&mut *self.copies.lock().unwrap())
     }
-    fn apply(&mut self, content: &Content) -> Result<()> {
+    fn apply(&mut self, content: &Content, origin: &str) -> Result<()> {
         self.applied.lock().unwrap().push(content.clone());
+        self.origins.lock().unwrap().push(origin.to_owned());
         if self.echo {
             self.copies.lock().unwrap().push(content.clone());
         }
         Ok(())
     }
-    fn remember(&mut self, content: &Content) -> Result<()> {
+    fn remember(&mut self, content: &Content, origin: &str) -> Result<()> {
         self.remembered.lock().unwrap().push(content.clone());
+        self.origins.lock().unwrap().push(origin.to_owned());
+        Ok(())
+    }
+    fn clear_history(&mut self) -> Result<()> {
+        *self.cleared.lock().unwrap() += 1;
         Ok(())
     }
 }
@@ -151,6 +159,9 @@ fn two_devices_sync_both_ways() {
         mac_clipboard.applied(),
         [Content::Text("ciao dal portatile".into())]
     );
+
+    // The Mac knows where it came from.
+    assert_eq!(*mac_clipboard.origins.lock().unwrap(), ["laptop"]);
 
     // Mac → laptop: an image.
     let image = Content::Image {
@@ -223,4 +234,107 @@ fn revoked_devices_are_locked_out() {
         .map(|(n, _)| n)
         .collect();
     assert_eq!(names, ["laptop"]);
+}
+
+/// Some bytes no padding or compression makes small.
+fn noise(len: usize) -> Vec<u8> {
+    let mut data = vec![0u8; len];
+    rand::RngCore::fill_bytes(&mut OsRng, &mut data);
+    data
+}
+
+#[test]
+fn big_items_are_announced_and_show_up_as_pending() {
+    let (url, fingerprint, links) = start_server(1);
+    let laptop = account::join(&links[0], "seb", PASSWORD, "laptop").unwrap();
+    let mac = account::login(&url, &fingerprint, "seb", PASSWORD, "Mac Pro").unwrap();
+    let remote = Remote::new(&url);
+
+    // The Mac is waiting; the laptop announces an upload: the wait ends at
+    // once with the transfer in it, from the laptop.
+    let seen = remote.items(&mac, mac.cursor, 0).unwrap().pending_version;
+    remote.announce(&laptop, &[9; 16], 3_000_000).unwrap();
+    let started = std::time::Instant::now();
+    let page = remote
+        .items_with_progress(&mac, mac.cursor, 10, Some(seen), &mut |_, _| {})
+        .unwrap();
+    assert!(started.elapsed() < std::time::Duration::from_secs(5));
+    assert_eq!(page.pending.len(), 1);
+    assert_eq!(page.pending[0].device.0, laptop.device.id().to_vec());
+    assert_eq!(page.pending[0].size, 3_000_000);
+
+    // A real big item goes through the announced path and arrives whole,
+    // with progress written for the UIs and nothing left pending after.
+    let laptop_path = temp_state("big-laptop");
+    let mac_path = temp_state("big-mac");
+    let status_dir = laptop_path.parent().unwrap().join("status");
+    let (laptop, laptop_clipboard) = device(laptop, &laptop_path, false);
+    let laptop = laptop.with_status_dir(status_dir.clone()).unwrap();
+    let (mac, mac_clipboard) = device(mac, &mac_path, false);
+    let image = Content::Image {
+        mime: "image/png".into(),
+        data: noise(2_000_000),
+    };
+    laptop_clipboard.copy(image.clone());
+    laptop.send_new_copies();
+    mac.receive_once(5).unwrap();
+    while mac_clipboard.applied().is_empty() {
+        mac.receive_once(5).unwrap();
+    }
+    assert_eq!(mac_clipboard.applied(), [image]);
+    let transfers = std::fs::read_to_string(status_dir.join("transfers.json")).unwrap();
+    assert!(transfers.contains("\"transfers\":[]"), "{transfers}");
+    let status = std::fs::read_to_string(status_dir.join("status.json")).unwrap();
+    assert!(status.contains("\"device_name\":\"laptop\""), "{status}");
+}
+
+#[test]
+fn clearing_everywhere_empties_the_server_and_reaches_the_other_devices() {
+    let (url, fingerprint, links) = start_server(1);
+    let laptop = account::join(&links[0], "seb", PASSWORD, "laptop").unwrap();
+    let mac = account::login(&url, &fingerprint, "seb", PASSWORD, "Mac Pro").unwrap();
+    let laptop_path = temp_state("clear-laptop");
+    let mac_path = temp_state("clear-mac");
+    let (laptop, _) = device(laptop, &laptop_path, false);
+    let (mac, mac_clipboard) = device(mac, &mac_path, false);
+
+    laptop
+        .send(&Content::Text("something private".into()))
+        .unwrap();
+    let state = State::load(&laptop_path).unwrap();
+    let remote = Remote::new(&url);
+    remote.delete_items(&state).unwrap();
+    assert!(remote.items(&state, 0, 0).unwrap().items.is_empty());
+
+    laptop.send(&Content::ClearHistory).unwrap();
+    mac.receive_once(5).unwrap();
+    assert_eq!(*mac_clipboard.cleared.lock().unwrap(), 1);
+    // A clear is never mistaken for a copy.
+    assert!(mac_clipboard.applied().is_empty());
+}
+
+#[test]
+fn every_device_shows_the_same_account_key_fingerprint() {
+    let (url, fingerprint, links) = start_server(1);
+    let laptop = account::join(&links[0], "seb", PASSWORD, "laptop").unwrap();
+    let mac = account::login(&url, &fingerprint, "seb", PASSWORD, "Mac Pro").unwrap();
+    assert_eq!(
+        laptop.account_key.fingerprint(),
+        mac.account_key.fingerprint()
+    );
+    let from_laptop = account::devices(&laptop).unwrap();
+    let from_mac = account::devices(&mac).unwrap();
+    assert_eq!(from_laptop.len(), 2);
+    // Both see the same devices with the same key fingerprints.
+    let fingerprints = |devices: &[account::DeviceInfo]| {
+        devices
+            .iter()
+            .map(|d| (d.name.clone(), d.fingerprint))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(fingerprints(&from_laptop), fingerprints(&from_mac));
+    assert_eq!(
+        from_mac.iter().find(|d| d.this).unwrap().fingerprint,
+        mac.device.public().fingerprint()
+    );
 }
