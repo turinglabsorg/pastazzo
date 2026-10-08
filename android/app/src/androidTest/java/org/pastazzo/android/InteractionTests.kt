@@ -132,7 +132,8 @@ class InteractionTests {
             compose.activity.startActivity(Intent(compose.activity, MainActivity::class.java)
                 .setAction(Intent.ACTION_SEND).setType("image/png").putExtra(Intent.EXTRA_STREAM, uri).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION))
         }
-        compose.waitUntil(10000) { model.items.count { it.kind == "image" } == count + 2 && !model.busy }
+        compose.waitUntil(10000) { model.message?.startsWith("Saved") == true && !model.busy }
+        assertEquals(count + 1, model.items.count { it.kind == "image" })
         compose.onNodeWithText("Images").performClick()
         compose.onAllNodes(hasText("Image ·", substring = true))[0].assertIsDisplayed()
     }

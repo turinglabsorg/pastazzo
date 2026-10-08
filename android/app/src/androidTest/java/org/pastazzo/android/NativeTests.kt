@@ -83,6 +83,25 @@ class NativeTests {
         } finally { connection.disconnect() }
     }
 
+    @Test fun nativeHistoryDeduplicatesFullContentAcrossRestarts() = runBlocking {
+        val root = root()
+        try {
+            val client = NativeClient(context, root)
+            val prefix = "x".repeat(400)
+            val text = "$prefix first ending"
+            val newestId = ClipboardAccess.encode(ByteArray(16) { 2 })
+            client.call("save", JSONObject().put("name", "MacBook").put("text", text).put("id", ClipboardAccess.encode(ByteArray(16) { 1 })))
+            client.call("save", JSONObject().put("name", "Mac Pro").put("text", text).put("id", newestId))
+            client.call("save", JSONObject().put("name", "MacBook").put("text", "$prefix second ending"))
+            val restarted = NativeClient(context, root)
+            val items = restarted.call("history").getJSONArray("items")
+            assertEquals(2, items.length())
+            val newest = (0 until items.length()).map { items.getJSONObject(it) }.first { it.getString("id") == newestId }
+            assertEquals("Mac Pro", newest.getString("origin"))
+            assertEquals(text, restarted.call("item", JSONObject().put("id", newestId)).getJSONObject("item").getString("text"))
+        } finally { root.deleteRecursively() }
+    }
+
     @Test fun nativeQrPairingSyncAndOfflineRetriesInteroperateWithDesktop() = runBlocking {
         val root = root()
         val client = NativeClient(context, root)

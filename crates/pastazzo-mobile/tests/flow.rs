@@ -144,6 +144,15 @@ fn mobile_flow(qr: bool) {
             data: image.clone(),
         })
         .unwrap();
+    daemon
+        .send(&Content::Text("Hello from Mac Pro".into()))
+        .unwrap();
+    daemon
+        .send(&Content::Image {
+            mime: "image/png".into(),
+            data: image.clone(),
+        })
+        .unwrap();
     execute(
         &json!({"operation":"refresh","root":root}),
         keychain.as_ref(),

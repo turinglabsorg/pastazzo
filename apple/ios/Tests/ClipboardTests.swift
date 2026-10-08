@@ -53,6 +53,8 @@ final class ClipboardTests: XCTestCase {
         XCTAssertEqual(model.items.count, 1)
         XCTAssertEqual(model.items[0].preview, "Explicit widget paste")
         XCTAssertEqual(UIPasteboard.general.string, "Explicit widget paste")
+        await model.pasteFromClipboard()
+        XCTAssertEqual(model.items.count, 1, "Repeating Paste must not add another identical card")
         let image = UIGraphicsImageRenderer(size: CGSize(width: 8, height: 8)).image { context in
             UIColor.orange.setFill(); context.fill(CGRect(x: 0, y: 0, width: 8, height: 8))
         }
@@ -61,6 +63,8 @@ final class ClipboardTests: XCTestCase {
         XCTAssertEqual(model.items.count, 2)
         XCTAssertTrue(model.items.contains { $0.kind == "image" })
         XCTAssertEqual(UIPasteboard.general.image?.size, image.size)
+        await model.pasteFromClipboard()
+        XCTAssertEqual(model.items.count, 2, "Repeated image Paste must show one image card")
         UIPasteboard.general.items = []
         await model.pasteFromClipboard()
         XCTAssertEqual(model.items.count, 2)
@@ -87,6 +91,28 @@ final class ClipboardTests: XCTestCase {
         _ = try await restarted.call("clear_local")
         let empty = try await restarted.call("history")
         XCTAssertEqual((empty["items"] as? [Any])?.count, 0)
+    }
+
+    @MainActor
+    func testNativeHistoryDeduplicatesFullContentAcrossRestarts() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let client = try MobileClient(root: root)
+        let prefix = String(repeating: "🍊", count: 400)
+        let first = prefix + " first ending"
+        let newestId = HistoryModel.base64URL(Data(repeating: 2, count: 16))
+        let fields: [String: Any] = ["text": first, "name": "MacBook", "id": HistoryModel.base64URL(Data(repeating: 1, count: 16))]
+        _ = try await client.call("save", fields)
+        _ = try await client.call("save", ["text": first, "name": "Mac Pro", "id": newestId])
+        _ = try await client.call("save", ["text": prefix + " second ending", "name": "MacBook"])
+        let restarted = try MobileClient(root: root)
+        let history = try await restarted.call("history")
+        let items = try XCTUnwrap(history["items"] as? [[String: Any]])
+        XCTAssertEqual(items.count, 2, "Different full text must stay separate despite identical previews")
+        let newestCopy = try XCTUnwrap(items.first { $0["id"] as? String == newestId })
+        XCTAssertEqual(newestCopy["origin"] as? String, "Mac Pro")
+        let copy = try await restarted.call("item", ["id": try XCTUnwrap(newestCopy["id"] as? String)])
+        XCTAssertEqual((copy["item"] as? [String: Any])?["text"] as? String, first)
     }
 
     @MainActor

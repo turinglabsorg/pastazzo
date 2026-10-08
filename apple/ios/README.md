@@ -26,6 +26,8 @@ The app refreshes while active. iOS does not provide a general background clipbo
 
 Device keys use the protected local keychain, accessible only while unlocked and never synchronized through iCloud. Clipboard files use private permissions and protected application storage excluded from backups. The share extension does not hold account keys or make network requests. Failed uploads retain their original ciphertext and item id for an idempotent retry. Clearing local history cancels queued uploads on that iPhone.
 
+History groups identical text and image payloads into one card, using the latest copy's date and device. Comparison uses complete content, not the truncated preview. Existing duplicate files are grouped automatically; any pending upload remains visible as queued and retains its original encrypted item id.
+
 ## Home Screen widgets
 
 Add Pastazzo from the iOS widget gallery. Paste & History is a medium widget with both actions; Paste and History are separate small widgets. Paste opens the app and imports the current text or image, then uses the ordinary encrypted outbox and sync flow. The iOS paste permission prompt applies. History opens the complete shelf and resets search and filters. These actions also use `pastazzo://paste` and `pastazzo://history`.

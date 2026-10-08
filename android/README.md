@@ -27,6 +27,8 @@ Tap Paste to import the current text or image and send it through the encrypted 
 
 The app refreshes while active and retries pending uploads when it reconnects. It does not continuously read other apps' clipboards or promise continuous background sync. Text is limited to 1 MB and images to 25 MB. Clearing local history also cancels this phone's queued uploads. Disconnect revokes its device identity and removes its protected account/device keys.
 
+History groups identical text and image payloads into one card, using the latest copy's date and device. Comparison uses complete content, not the truncated preview. Existing duplicate files are grouped automatically; any pending upload remains visible as queued and retains its original encrypted item id.
+
 ## Key storage
 
 Android Keystore holds a nonexportable AES-GCM wrapping key, restricted to use while the device is unlocked. Account/device secret bundles are authenticated and encrypted with that key in the app's `noBackupFilesDir`; there is no plaintext fallback. The Rust state file contains public connection metadata and a keychain reference. Private directories are 0700 and files 0600. Clipboard history stays in private app storage, excluded from backup and device transfer. Explicit image copies use a bounded private cache exposed only through temporary clipboard URI grants. Clipboard previews are marked sensitive.
