@@ -7,3 +7,9 @@
 /apple/ios/build
 /apple/ios/Pastazzo.xcodeproj
 /apple/ios/Frameworks
+/android/.gradle
+/android/.kotlin
+/android/local.properties
+/android/build
+/android/app/build
+/android/app/src/main/jniLibs

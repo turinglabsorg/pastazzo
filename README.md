@@ -21,6 +21,8 @@ Pastazzo is a clipboard history for GNOME on Wayland and for macOS, inspired by 
 - Optional sync across Linux and macOS devices: every item is encrypted on the device that copied it, and only your devices can read it. The shelf shows which device each item came from, and the progress of big transfers
 - Clear the history on one device or on all of them
 
+Native [iOS](apple/ios/README.md) and [Android](android/README.md) apps join the same encrypted network by scanning a pairing QR on a trusted Mac. They provide searchable text/image history, explicit Paste and Copy, sharing, and Home Screen widgets. Mobile clipboard capture requires a deliberate action; sync refreshes while the app is active.
+
 ## Install
 
 ### Linux (GNOME on Wayland)

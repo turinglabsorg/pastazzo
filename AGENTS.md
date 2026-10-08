@@ -14,6 +14,8 @@ The macOS app builds only on a Mac, from Terminal on the Mac itself: `sh apple/m
 
 The iOS app lives in `apple/ios`; read its README for Rust framework generation, XcodeGen, signing, and native simulator tests. Keep cryptography and sync in `pastazzo-mobile` using the shared Rust client. The share extension only writes the protected App Group inbox; it never sends plaintext to the network.
 
+The Android app lives in `android`; read its README for the NDK Rust build, Gradle, and emulator instrumentation. It uses Kotlin/Material 3 and the same Rust engine through JNI. Run the isolated `android_fixture` example and ADB loopback port forwarding before its integration tests.
+
 ## Architecture and entry points
 
 - `pastazzo-mobile` exposes a JSON C bridge (`pastazzo_mobile_call` / `pastazzo_mobile_free`) to SwiftUI. It manages text/image history, device origins, local search data, and encrypted uploads. iOS account and device keys require the protected local keychain; there is no file-key fallback.
@@ -22,6 +24,8 @@ The iOS app lives in `apple/ios`; read its README for Rust framework generation,
 - Pairing endpoints are `POST /v1/pairings`, `GET` / `DELETE /v1/pairings/{id}`, `POST /v1/pairings/{id}/request`, and `PUT /v1/pairings/{id}/grant`. Sessions are held in memory, bind the first valid peer, and expire on timeout, cancellation, owner revocation, or server restart. Shared JSON schemas live in `pastazzo-core::api`; the full format is in `docs/PROTOCOL.md`.
 - Desktop and mobile outboxes persist sealed items and reuse their original ciphertext and item ids after failures or restarts. Identical uploads return the original server cursor; conflicting reuse of an item id returns HTTP 409.
 - `pastazzo-sync backup` pipes the existing private recovery state directly into hush and returns only an encrypted envelope. Recovery and credential replacement are documented in `docs/RECOVERY.md`.
+- Android supplies `SecretBackend` through the JNI bridge in `pastazzo-mobile::android`. A nonexportable, unlocked-device-only Android Keystore AES-GCM key wraps each account/device secret bundle in private storage excluded from backup; there is no plaintext fallback. Account keys still reach Rust only for local cryptographic operations.
+- Android clipboard access lives in `ClipboardAccess`; reads require an explicit focused activity action. The widget's immutable PendingIntent targets the private `PasteShortcut` alias. Public Paste links require confirmation, History never imports the clipboard, and the share target uses only its provided payload. Production QR setup accepts HTTPS; loopback HTTP is debug-only.
 
 ## Rules
 

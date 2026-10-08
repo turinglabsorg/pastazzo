@@ -15,3 +15,12 @@ Pastazzo is a quiet clipboard shelf with a citrus identity. Content and its prov
 - iOS setup starts with Scan Mac QR. The Mac shows a high-contrast temporary QR on white with a quiet zone, expiry, and a confirmation for the requesting device. Manual server, fingerprint, username, and secure password fields live under Connect manually. Passwords never go in command arguments or logs.
 - Empty shelves explain how to add the first item. Tests and screenshots use explicitly seeded demo content only.
 - Home Screen widgets use the original citrus mark and semantic system backgrounds. The medium widget has equally accessible Paste and History actions; small widgets offer one action each. Paste opens the app and imports the current clipboard only on that explicit request. Widgets show no private clipboard previews and hold no account keys.
+
+## Android interfaces
+
+- Use Kotlin and Material 3 with system sans-serif typography, semantic light/dark colors, the existing citrus accent, and the original Pastazzo icon. Keep 20 dp content margins, 16 dp history cards, and native controls that scale with the system font setting.
+- Pair bright citrus action backgrounds with dark ink. Use deeper orange `#B4440D` for light-mode text accents and `#FFAD73` for dark-mode accents; shelf surfaces use warm neutrals rather than the default Material purple.
+- The shelf puts device origin above each text or image entry, followed by its date, queued state, and explicit Copy action. Search and All/Text/Images filters remain visible above the history. Empty history explains the Paste action.
+- Settings starts with Scan Mac QR and shows the approval code while waiting for the Mac. A scanned or externally opened pairing link requires Connect confirmation and displays the server host without exposing the temporary capability.
+- Paste reads the clipboard only while the activity has focus after a deliberate button or widget action. Receiving and opening History do not alter or import the clipboard. Public Paste links require confirmation; the immutable widget PendingIntent uses a private activity alias.
+- The Home Screen widget has the citrus mark and equal Paste and History actions, light/dark backgrounds, and no clipboard previews or account keys. Share targets import only the text or image explicitly provided by the sending app.
