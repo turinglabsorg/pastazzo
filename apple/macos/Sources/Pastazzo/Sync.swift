@@ -8,7 +8,7 @@ final class SyncMonitor: ObservableObject {
     @Published private(set) var transferText: String?
     /// Just the percentage, for the menu bar.
     @Published private(set) var transferShort: String?
-    @Published private(set) var localDevice = ""
+    @Published private(set) var localDevice = Host.current().localizedName ?? "This Mac"
     /// Devices that logged in and wait for approval.
     @Published private(set) var waitingDevices = 0
 
@@ -66,7 +66,7 @@ final class SyncMonitor: ObservableObject {
     }
 
     private func read() {
-        let device = decode(Info.self, "status.json")?.deviceName ?? ""
+        let device = decode(Info.self, "status.json")?.deviceName ?? Host.current().localizedName ?? "This Mac"
         if device != localDevice {
             localDevice = device
         }
@@ -130,10 +130,76 @@ struct SyncDevice: Decodable, Identifiable, Equatable {
     var isThisDevice: Bool { this ?? false }
 }
 
+struct SyncPairingStatus: Decodable {
+    let expiresAt: Double
+    let name: String?
+    let code: String?
+    let completed: Bool
+}
+
 /// Runs `pastazzo-sync` commands for the settings.
 final class SyncClient {
     let cli = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".local/bin/pastazzo-sync")
     private let queue = DispatchQueue(label: "org.pastazzo.sync-client")
+
+    func createPairing(completion: @escaping (String?, Double?, String?) -> Void) {
+        run(["pair", "create", "--json"]) { data, error in
+            guard let data, let result = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let link = result["link"] as? String, let expiry = result["expires_at"] as? Double else {
+                completion(nil, nil, error ?? "Couldn't create the pairing QR."); return
+            }
+            completion(link, expiry, nil)
+        }
+    }
+
+    func pairingStatus(completion: @escaping (SyncPairingStatus?, String?) -> Void) {
+        run(["pair", "status", "--json"]) { data, error in
+            let decoder = JSONDecoder()
+            decoder.keyDecodingStrategy = .convertFromSnakeCase
+            completion(data.flatMap { try? decoder.decode(SyncPairingStatus.self, from: $0) }, error)
+        }
+    }
+
+    func login(server: String, fingerprint: String, username: String, password: String,
+               onCode: @escaping (String) -> Void, completion: @escaping (String?) -> Void) {
+        queue.async {
+            let process = Process()
+            process.executableURL = self.cli
+            process.arguments = ["login", "--server", server, "--fingerprint", fingerprint,
+                                 "--username", username, "--password-file", "/dev/stdin"]
+            let input = Pipe()
+            let output = Pipe()
+            let errors = Pipe()
+            process.standardInput = input
+            process.standardOutput = output
+            process.standardError = errors
+            do {
+                try process.run()
+                input.fileHandleForWriting.write(Data(password.utf8))
+                try input.fileHandleForWriting.close()
+                var pending = ""
+                while let data = try output.fileHandleForReading.read(upToCount: 4096), !data.isEmpty {
+                    pending += String(decoding: data, as: UTF8.self)
+                    while let end = pending.firstIndex(of: "\n") {
+                        let line = String(pending[..<end])
+                        pending.removeSubrange(...end)
+                        if let range = line.range(of: "approval code: ") {
+                            let code = String(line[range.upperBound...]).trimmingCharacters(in: .whitespaces)
+                            DispatchQueue.main.async { onCode(code) }
+                        }
+                    }
+                }
+                let errorData = errors.fileHandleForReading.readDataToEndOfFile()
+                process.waitUntilExit()
+                let error = process.terminationStatus == 0 ? nil
+                    : String(decoding: errorData, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+                DispatchQueue.main.async { completion(error) }
+            } catch {
+                if process.isRunning { process.terminate() }
+                DispatchQueue.main.async { completion(error.localizedDescription) }
+            }
+        }
+    }
 
     func status(completion: @escaping (SyncStatus) -> Void) {
         run(["status", "--json"]) { output, error in

@@ -29,6 +29,8 @@ impl Remote {
     pub fn new(server_url: &str) -> Self {
         let config = Agent::config_builder()
             .http_status_as_error(false)
+            .timeout_resolve(Some(Duration::from_secs(10)))
+            .timeout_connect(Some(Duration::from_secs(10)))
             // Long enough for a long poll, short enough to notice a dead link.
             .timeout_global(Some(Duration::from_secs(api::MAX_WAIT_SECONDS + 30)))
             .build();
@@ -331,6 +333,37 @@ impl Remote {
     pub fn revoke_device(&self, state: &State, device: &[u8; 16]) -> Result<()> {
         let path = format!("/v1/devices/{}", B64::encode(device));
         Self::check_empty(self.signed_send(state, "DELETE", &path, b"")?)
+    }
+
+    pub fn pairing_create(
+        &self,
+        state: &State,
+        body: &api::PairingCreate,
+    ) -> Result<api::PairingStatus> {
+        let bytes = serde_json::to_vec(body).map_err(|e| e.to_string())?;
+        Self::check(self.signed_send(state, "POST", "/v1/pairings", &bytes)?)
+    }
+
+    pub fn pairing_status(&self, state: &State, id: &Id) -> Result<api::PairingStatus> {
+        Self::check(self.signed_get(state, &format!("/v1/pairings/{}", B64::encode(id)))?)
+    }
+
+    pub fn pairing_grant(&self, state: &State, id: &Id, grant: &[u8]) -> Result<()> {
+        Self::check_empty(self.signed_send(
+            state,
+            "PUT",
+            &format!("/v1/pairings/{}/grant", B64::encode(id)),
+            grant,
+        )?)
+    }
+
+    pub fn pairing_cancel(&self, state: &State, id: &Id) -> Result<()> {
+        Self::check_empty(self.signed_send(
+            state,
+            "DELETE",
+            &format!("/v1/pairings/{}", B64::encode(id)),
+            b"",
+        )?)
     }
 }
 

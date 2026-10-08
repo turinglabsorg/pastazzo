@@ -224,6 +224,7 @@ Clients:
 - ignore item ids they have already seen;
 - put an item on the clipboard only if it's newer than the last one they applied and no more than 5 minutes ahead of their own clock; other unseen items only go to the history;
 - detect echoes and duplicates after decryption, on the device. Content hashes are never sent to the server, not even keyed ones.
+- keep failed uploads as sealed items in a private on-device outbox. A retry sends the same sealed bytes with a fresh signed request nonce and timestamp, including after a restart. Identical uploads by the same device return the original cursor; reusing an item id with different bytes is refused with HTTP 409. Item encryption and its wire format do not change on retry.
 
 ## Invite links
 
@@ -232,6 +233,16 @@ pastazzo://join?v=1&server=<url>&fp=<fingerprint>&id=<invite id>&key=<invite sec
 ```
 
 `server`, `fp`, `id` and `key` are base64url without padding; the server URL starts with `https://` or `http://`. The secret is 32 bytes. It's never sent anywhere, and the server doesn't keep it: the admin CLI stores only the invite id and the public half of `invite_key`, then prints the link. Deliver it out of band.
+
+## Passwordless QR pairing
+
+A trusted, approved device creates an in-memory pairing session using a fresh invite id and seed. The server stores only its `InviteVerifier`, account, owner, username, and five-minute expiry. Creating another session on that owner invalidates the previous one. Restart, cancellation, expiry, or owner revocation invalidates a session.
+
+The physical QR uses `pastazzo://pair?v=1&server=<url>&fp=<fingerprint>&id=<id>&key=<seed>&account=<account>&owner=<DevicePublic>&username=<username>&expires=<milliseconds>`. All values except version and expiry are base64url without padding. The parser rejects unknown or duplicate fields and links over 4096 bytes. The URL carries public trust data and a temporary invite capability, never account keys or a password.
+
+The iPhone generates its own device keys. Its proof is the existing invite start proof for the username, with the request set to `T("pastazzo/v1/pairing-peer", [DevicePublic, UTF8(name)])`. Device names are nonempty and at most 128 UTF-8 bytes. The server binds the first valid device and name; retries for that peer are idempotent, other peers get 409. The Mac independently verifies this proof and compares the approval code before approving.
+
+The grant plaintext is `version(1) || pairing_id(16) || account_id(16) || recipient_DevicePublic(80) || epoch_be(4) || AK(32) || account_secret(32)`. It is sealed to the recipient using the existing device sealed-box format. The owner signs `T("pastazzo/v1/pairing-grant", [pairing_id, account_id, recipient_DevicePublic, sealed_box])`. The wire grant is `Ed25519_signature(64) || sealed_box`. The iPhone verifies the signature against the owner's signing key in the physical QR, then decrypts and checks every embedded binding. It publishes its normal encrypted device record and begins at the latest cursor. No account password is used.
 
 ## HTTP API
 
@@ -244,6 +255,11 @@ JSON bodies unless noted. Endpoints marked *signed* need a [signed request] from
 | `POST /v1/register/finish` | Registration steps 4–5 |
 | `POST /v1/login/start` | Login steps 1–2 |
 | `POST /v1/login/finish` | Login steps 3–4 |
+| `POST /v1/pairings` | *Signed.* Create a QR session: `{id, verifier, username}`; returns `{expires_at, peer, completed}` |
+| `GET /v1/pairings/{id}` | *Signed, by the owner.* Status including the peer's `{device, name, proof}` |
+| `DELETE /v1/pairings/{id}` | *Signed, by the owner.* Cancel the session |
+| `POST /v1/pairings/{id}/request` | Invite proof authenticated. Submit `{device, name, proof}`; returns `{account, grant}` with null grant until confirmation |
+| `PUT /v1/pairings/{id}/grant` | *Signed, by the owner.* Submit the binary signed sealed grant and approve the peer. Identical retries succeed; changed grants get 409 |
 | `PUT /v1/devices/{id}` | *Signed.* Publish this device's record (binary body) |
 | `GET /v1/devices` | *Signed.* The account's device records, and the public keys of the devices waiting for approval |
 | `DELETE /v1/devices/{id}` | *Signed.* Revoke a device of the account, or reject one waiting |
@@ -277,8 +293,10 @@ Inputs:
 - item: id `seq(0x10, 16)`, device `seq(0x20, 16)`, epoch 1, created_at `1791379434274`, text `hello`, nonce `seq(0xb0, 24)`
 - device: id `seq(0x20, 16)`, Ed25519 secret `seq(0x30, 32)`, X25519 secret `seq(0x50, 32)`
 - request: server fingerprint `seq(0x90, 32)`, the account id above, `POST /v1/items`, body `body`, timestamp `1791379434274`, nonce `seq(0xf0, 16)`
+- request retry: the same scope, device, path, and body, timestamp `1791379434275`, nonce `seq(0xa0, 16)`
 - invite: id `seq(0xe0, 16)`, secret `seq(0xd0, 32)`, username `seb`; start request `request`, sealed record `sealed`
 - session key = `seq(0x60, 64)`, username `seb`, the device and wrapped key above
+- QR pairing: owner is the device above, account and invite ids and account secret as above; recipient generation followed by sealed grant uses a fresh ChaCha20 RNG seeded with `24` × 32; peer name `iPhone`.
 - server identity: OPAQUE public `01` × 32, transport public `02` × 32, signing public `03` × 32
 
 Outputs (hex):
@@ -292,6 +310,7 @@ sealed item sha256      3229c379d25d2d04482546c64d06adfa82bab837bc1ad654795453b9
 device signing public   8bb04e1c1b83dddf311f5bcddf7c50ede3c0802f47ec796e2a131cf41298d9f3
 device exchange public  392d174a38b3b1beafaf1fe824870841c5fa531bc6eafdb6402c124664488c1c
 request signature       ce199fd2e07212767c8fa317564c1d657e645eb926e274ab95b56c07b333f9c87f195f6a9e5c43792c0f778a3307c803df8be07b92fda3d80c8a1cfdab065c0c
+request retry signature aa8b9bf920e32856d45122c808a99cb48c7326c3712fc52c0ebe5bf0b058d4be2109b21425970c3e7ed95ef0ddc8b2dc390a5b0a62572b945b648a0be13f840d
 invite verifier         577577ed2fe0cea0d9181cad7db6ff8fc33a8c54b63c1d03d89e0e50312b1ee4
 invite start proof      f12edf5623e5a024f87b63a1ed13a927f2850a0bf4aff9d5a419676a1f704f2156e47e852de2fa596a754c7d14df57c3bd3a9dff31966b359106945efa4e5e0a
 invite finish proof     3b010f76ff7919433b08230e6dfe98f96bbf3104a5375c718c58bb152bfafe8e55d273511209e8bf00aa9dc29071d1d436114d31d334a86b5901870c32215606
@@ -301,6 +320,9 @@ server fingerprint      f69c9f26c4c1190ee7f3488ec1747cc838188379dda29cf9ca1ace9e
 account key fingerprint 6b02d833142fb0cab9369ae46e2e09a9
 device fingerprint      4a4e0279a9f5c72f651881210fad3c1bb987a210771c5f59ce4baa19b382e0d7
 approval code           4A4E 0279 A9F5 C72F
+pairing peer proof      633da9d50894a69d902cd2b4bc7518b29369522f438bbb59a8bc7fe1d692fdbeb7d545b798a7bf247d5c0c281925360f8a6a60fe4126400ecbe228f8e5699601
+pairing grant length    293
+pairing grant sha256    adf592192d392feae3002513957f8b7e946ce450ce6d8d0ad0f541a58cfa2038
 ```
 
 The tests also run a full registration and login with a ChaCha20 RNG seeded with `42` × 32 and pin the resulting export key, session key and password file. Those values depend on how opaque-ke draws random numbers, so they're a regression check for this implementation, not vectors for another one: what they pin is the cipher suite, the Argon2id parameters, the identifiers and the context.

@@ -13,6 +13,24 @@ APP=/Applications/Pastazzo.app
 DOMAIN="gui/$(id -u)"
 IDENTITY="${PASTAZZO_SIGN_IDENTITY:-Pastazzo Local Signing}"
 
+reload_agent() {
+    label="$1"
+    plist="$2"
+    launchctl bootout "$DOMAIN/$label" 2>/dev/null || true
+    errors=$(mktemp)
+    attempt=0
+    while ! launchctl bootstrap "$DOMAIN" "$plist" 2>"$errors"; do
+        attempt=$((attempt + 1))
+        if [ "$attempt" -ge 10 ]; then
+            cat "$errors" >&2
+            rm -f "$errors"
+            return 1
+        fi
+        sleep 0.5
+    done
+    rm -f "$errors"
+}
+
 # Signs with the local certificate from signing.sh when there is one, so the
 # keychain and Accessibility keep trusting pastazzo across updates; otherwise
 # ad hoc, which they forget at every build. Signing needs the login keychain:
@@ -78,13 +96,12 @@ cat > "$AGENTS/org.pastazzo.app.plist" <<EOF
 </dict>
 </plist>
 EOF
-launchctl bootstrap "$DOMAIN" "$AGENTS/org.pastazzo.app.plist"
+reload_agent org.pastazzo.app "$AGENTS/org.pastazzo.app.plist"
 
 # Sync runs whenever this Mac is logged in to a pastazzo account. (Re)loading
 # it also makes it notice the app, and switch to the app's history.
 sed "s#/Users/YOU#$HOME#g" "$ROOT/contrib/launchd/org.pastazzo.sync.plist" > "$AGENTS/org.pastazzo.sync.plist"
-launchctl bootout "$DOMAIN/org.pastazzo.sync" 2>/dev/null || true
-launchctl bootstrap "$DOMAIN" "$AGENTS/org.pastazzo.sync.plist"
+reload_agent org.pastazzo.sync "$AGENTS/org.pastazzo.sync.plist"
 
 echo "installed $APP"
 echo "to paste with a double-click or Return, allow Pastazzo in System Settings → Privacy & Security → Accessibility"

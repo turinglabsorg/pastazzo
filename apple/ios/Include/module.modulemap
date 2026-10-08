@@ -1,0 +1,4 @@
+module PastazzoMobile {
+    header "pastazzo_mobile.h"
+    export *
+}

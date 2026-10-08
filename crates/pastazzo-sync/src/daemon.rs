@@ -10,6 +10,8 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs;
+use std::io::Write;
+use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -44,6 +46,26 @@ const NAMES_REFRESH: Duration = Duration::from_secs(30);
 const STATUS_INTERVAL: Duration = Duration::from_millis(150);
 /// How often devices waiting for approval are looked for.
 const APPROVALS_INTERVAL: Duration = Duration::from_secs(10);
+
+fn remove_outbox(path: &Path) -> Result<()> {
+    match fs::remove_dir_all(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!("cancel queued copies: {error}")),
+    }
+}
+
+fn remove_sent(path: &Path) -> Result<()> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!("remove sent copy: {error}")),
+    }
+}
+
+pub fn cancel_pending(state_path: &Path) -> Result<()> {
+    remove_outbox(&state_path.with_file_name("outbox"))
+}
 
 /// A content hash, local to this device: never sent anywhere.
 pub fn fingerprint(content: &Content) -> [u8; 32] {
@@ -193,6 +215,7 @@ pub struct Daemon {
     /// The device whose upload was last seen coming, for labelling the download.
     last_sender: Arc<Mutex<String>>,
     approvals_checked: Arc<Mutex<Option<Instant>>>,
+    outbox_checked: Arc<Mutex<Option<Instant>>>,
 }
 
 impl Daemon {
@@ -209,6 +232,7 @@ impl Daemon {
             names: Arc::default(),
             last_sender: Arc::default(),
             approvals_checked: Arc::default(),
+            outbox_checked: Arc::default(),
         }
     }
 
@@ -264,6 +288,18 @@ impl Daemon {
     /// Sends every local copy made since the last call, except echoes of
     /// what was just received.
     pub fn send_new_copies(&self) {
+        let retry = {
+            let mut checked = self.outbox_checked.lock().unwrap();
+            if checked.is_none_or(|at| at.elapsed() >= Duration::from_secs(30)) {
+                *checked = Some(Instant::now());
+                true
+            } else {
+                false
+            }
+        };
+        if retry && let Err(error) = self.flush_outbox() {
+            log!("couldn't retry queued copies: {error}");
+        }
         let copies = self.clipboard.lock().unwrap().poll();
         for content in copies {
             if self.shared.lock().unwrap().is_echo(&content) {
@@ -302,9 +338,83 @@ impl Daemon {
         .to_bytes();
         self.shared.lock().unwrap().first_sight(header.id);
 
+        let path = self.queue_item(&sealed, &header)?;
+        self.upload(&sealed, &header.id)?;
+        remove_sent(&path)
+    }
+
+    fn outbox(&self) -> PathBuf {
+        self.state_path
+            .with_file_name("outbox")
+            .join(B64::encode(&self.state.device.id()))
+    }
+
+    fn queue_item(&self, sealed: &[u8], header: &ItemHeader) -> Result<PathBuf> {
+        let dir = self.outbox();
+        fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(&dir)
+            .map_err(|e| format!("create outbox: {e}"))?;
+        for directory in [dir.parent().expect("outbox parent"), &dir] {
+            fs::set_permissions(directory, fs::Permissions::from_mode(0o700))
+                .map_err(|e| format!("protect outbox: {e}"))?;
+        }
+        let path = dir.join(format!(
+            "{:020}-{}.sealed",
+            header.created_at,
+            B64::encode(&header.id)
+        ));
+        let temporary = path.with_extension("tmp");
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&temporary)
+            .map_err(|e| format!("queue copy: {e}"))?;
+        file.write_all(sealed)
+            .and_then(|_| file.sync_all())
+            .map_err(|e| format!("queue copy: {e}"))?;
+        fs::rename(temporary, &path).map_err(|e| format!("queue copy: {e}"))?;
+        Ok(path)
+    }
+
+    pub fn flush_outbox(&self) -> Result<()> {
+        let entries = match fs::read_dir(self.outbox()) {
+            Ok(entries) => entries,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(e) => return Err(format!("read outbox: {e}")),
+        };
+        let mut paths: Vec<_> = entries
+            .filter_map(|entry| entry.ok().map(|e| e.path()))
+            .filter(|path| path.extension().is_some_and(|ext| ext == "sealed"))
+            .collect();
+        paths.sort();
+        for path in paths {
+            let bytes = match fs::read(&path) {
+                Ok(bytes) => bytes,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(error) => return Err(format!("read queued copy: {error}")),
+            };
+            let item =
+                SealedItem::from_bytes(&bytes).map_err(|e| format!("invalid queued copy: {e}"))?;
+            if item.header.device != self.state.device.id() {
+                return Err("queued copy belongs to another device".into());
+            }
+            item.open(&self.state.account_key, &self.state.account)
+                .map_err(|_| "queued copy belongs to another account")?;
+            self.upload(&bytes, &item.header.id)?;
+            remove_sent(&path)?;
+        }
+        Ok(())
+    }
+
+    fn upload(&self, sealed: &[u8], id: &Id) -> Result<()> {
+        let state = &self.state;
+
         let big = sealed.len() >= ANNOUNCE_BYTES;
         if big {
-            if let Err(error) = self.remote.announce(state, &header.id, sealed.len() as u64) {
+            if let Err(error) = self.remote.announce(state, id, sealed.len() as u64) {
                 log!("couldn't announce a big item ({error}), sending it anyway");
             }
             self.set_sending(Some(Transfer {
@@ -318,7 +428,7 @@ impl Daemon {
         let mut result = Err(String::new());
         for attempt in 1..=3 {
             result = if big {
-                self.remote.upload_item(state, &sealed, &mut |done, total| {
+                self.remote.upload_item(state, sealed, &mut |done, total| {
                     self.set_sending(Some(Transfer {
                         direction: "send",
                         device: String::new(),
@@ -327,7 +437,7 @@ impl Daemon {
                     }));
                 })
             } else {
-                self.remote.post_item(state, &sealed)
+                self.remote.post_item(state, sealed)
             };
             match &result {
                 Ok(_) => break,
@@ -521,6 +631,7 @@ impl Daemon {
         let origin = self.device_name(&sealed.header.device);
         if content == Content::ClearHistory {
             log!("{origin} cleared the history on every device");
+            remove_outbox(&self.outbox())?;
             return self.clipboard.lock().unwrap().clear_history();
         }
         let apply = {

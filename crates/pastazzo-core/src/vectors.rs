@@ -128,6 +128,19 @@ fn vectors() -> Vec<(&'static str, String)> {
             )
             .signature),
         ),
+        (
+            "request retry signature",
+            hex(&RequestSignature::sign_with_nonce(
+                &device,
+                &scope,
+                "POST",
+                "/v1/items",
+                b"body",
+                CREATED_AT + 1,
+                seq(0xa0),
+            )
+            .signature),
+        ),
         ("invite verifier", hex(&invite.verifier().public)),
         (
             "invite start proof",
@@ -162,6 +175,26 @@ fn vectors() -> Vec<(&'static str, String)> {
             crate::approval::approval_code(&device.public()),
         ),
     ];
+    let mut pairing_rng = rand_chacha::ChaCha20Rng::from_seed([0x24; 32]);
+    let recipient = DeviceKeys::generate(&mut pairing_rng);
+    let pairing_grant = crate::pairing::seal_grant(
+        &device,
+        &invite.id,
+        &account,
+        &recipient.public(),
+        &key,
+        &AccountSecret::from_bytes(seq(0x70)),
+        &mut pairing_rng,
+    );
+    vectors.push((
+        "pairing peer proof",
+        hex(&invite.start_proof(
+            "seb",
+            &crate::pairing::peer_message(&recipient.public(), "iPhone"),
+        )),
+    ));
+    vectors.push(("pairing grant length", pairing_grant.len().to_string()));
+    vectors.push(("pairing grant sha256", hex(&Sha256::digest(&pairing_grant))));
     vectors.extend(opaque_vectors());
     vectors
 }
@@ -197,6 +230,10 @@ const EXPECTED: &[(&str, &str)] = &[
         "ce199fd2e07212767c8fa317564c1d657e645eb926e274ab95b56c07b333f9c87f195f6a9e5c43792c0f778a3307c803df8be07b92fda3d80c8a1cfdab065c0c",
     ),
     (
+        "request retry signature",
+        "aa8b9bf920e32856d45122c808a99cb48c7326c3712fc52c0ebe5bf0b058d4be2109b21425970c3e7ed95ef0ddc8b2dc390a5b0a62572b945b648a0be13f840d",
+    ),
+    (
         "invite verifier",
         "577577ed2fe0cea0d9181cad7db6ff8fc33a8c54b63c1d03d89e0e50312b1ee4",
     ),
@@ -229,6 +266,15 @@ const EXPECTED: &[(&str, &str)] = &[
         "4a4e0279a9f5c72f651881210fad3c1bb987a210771c5f59ce4baa19b382e0d7",
     ),
     ("approval code", "4A4E 0279 A9F5 C72F"),
+    (
+        "pairing peer proof",
+        "633da9d50894a69d902cd2b4bc7518b29369522f438bbb59a8bc7fe1d692fdbeb7d545b798a7bf247d5c0c281925360f8a6a60fe4126400ecbe228f8e5699601",
+    ),
+    ("pairing grant length", "293"),
+    (
+        "pairing grant sha256",
+        "adf592192d392feae3002513957f8b7e946ce450ce6d8d0ad0f541a58cfa2038",
+    ),
     (
         "opaque server fingerprint",
         "e89a3768d5bde88ae9e5cda6b0e8104f2306d92aeed356e261cbd54404d8a26a",

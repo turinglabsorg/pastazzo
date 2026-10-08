@@ -28,6 +28,7 @@ use zeroize::Zeroizing;
 
 const USAGE: &str = "usage:
   pastazzo-sync join <invite link> --username <name> [--name <device name>]
+  pastazzo-sync join --invite-file <file> --username <name> [--name <device name>]
   pastazzo-sync login --server <url> --fingerprint <fp> --username <name> [--name <device name>]
   pastazzo-sync run
   pastazzo-sync send <text>
@@ -37,6 +38,11 @@ const USAGE: &str = "usage:
   pastazzo-sync revoke <device id>
   pastazzo-sync clear [--everywhere]
   pastazzo-sync logout
+  pastazzo-sync backup --hush-public-key <file> [--hush <binary>]
+  pastazzo-sync pair create --json
+  pastazzo-sync pair status --json
+  pastazzo-sync pair approve --code <code>
+  pastazzo-sync pair cancel
 
 join and login read the password from the terminal, or from --password-file <file>";
 
@@ -142,6 +148,49 @@ fn run() -> Result<()> {
     let args = Args::parse()?;
     let path = State::default_path()?;
     match args.command.as_str() {
+        "pair" => {
+            use pastazzo_sync::pairing;
+            let state = State::load(&path)?;
+            let offer_path = path.with_file_name("pairing.json");
+            match args.positional.first().map(String::as_str) {
+                Some("create") => {
+                    let (link, offer) = pairing::create(&state)?;
+                    offer.save(&offer_path)?;
+                    println!(
+                        "{}",
+                        serde_json::json!({"link":link.to_link().as_str(), "expires_at":offer.expires_at})
+                    );
+                }
+                Some("status") => {
+                    let offer = pairing::Offer::load(&offer_path)?;
+                    let status = pairing::status(&state, &offer)?;
+                    let peer = status.peer.as_ref();
+                    let code = peer
+                        .and_then(|p| {
+                            pastazzo_core::device::DevicePublic::from_bytes(&p.device.0).ok()
+                        })
+                        .map(|p| pastazzo_core::approval::approval_code(&p));
+                    println!(
+                        "{}",
+                        serde_json::json!({"expires_at":status.expires_at, "name":peer.map(|p| &p.name),
+                        "code":code, "completed":status.completed})
+                    );
+                }
+                Some("approve") => pairing::approve(
+                    &state,
+                    &pairing::Offer::load(&offer_path)?,
+                    args.required("code")?,
+                )?,
+                Some("cancel") => {
+                    let offer = pairing::Offer::load(&offer_path)?;
+                    let result = Remote::new(&state.server_url).pairing_cancel(&state, &offer.id);
+                    let _ = std::fs::remove_file(offer_path);
+                    result?;
+                }
+                _ => return Err(USAGE.into()),
+            }
+            Ok(())
+        }
         "join" => {
             if path.exists() {
                 return Err(format!(
@@ -149,7 +198,11 @@ fn run() -> Result<()> {
                     path.display()
                 ));
             }
-            let link = args.positional.first().ok_or(USAGE)?;
+            let link = Zeroizing::new(if let Some(file) = args.option("invite-file") {
+                std::fs::read_to_string(file).map_err(|e| format!("can't read the invite: {e}"))?
+            } else {
+                args.positional.first().ok_or(USAGE)?.clone()
+            });
             let username = args.required("username")?;
             let password = args.password(true)?;
             if password.chars().count() < MIN_PASSWORD_CHARS {
@@ -157,7 +210,7 @@ fn run() -> Result<()> {
                     "use a password of at least {MIN_PASSWORD_CHARS} characters: it's the only thing protecting your account from the server"
                 ));
             }
-            let mut state = account::join(link, username, &password, &args.device_name())?;
+            let mut state = account::join(link.trim(), username, &password, &args.device_name())?;
             state.save_new(&path)?;
             println!("account {username} created, this device is logged in");
             print_login_command(&state);
@@ -250,6 +303,17 @@ fn run() -> Result<()> {
             print_login_command(&state);
             Ok(())
         }
+        "backup" => {
+            use std::io::Write;
+            let state = State::load(&path)?;
+            let bytes = state.backup_to_hush(
+                std::path::Path::new(args.required("hush-public-key")?),
+                args.option("hush").unwrap_or("hush"),
+            )?;
+            std::io::stdout()
+                .write_all(&bytes)
+                .map_err(|e| e.to_string())
+        }
         "devices" => {
             let state = State::load(&path)?;
             let (devices, pending) = account::devices_and_pending(&state)?;
@@ -324,6 +388,7 @@ fn run() -> Result<()> {
             Ok(())
         }
         "clear" => {
+            daemon::cancel_pending(&path)?;
             clipboard::platform()?.clear_history()?;
             if args.option("everywhere").is_none() {
                 println!("history cleared on this device");

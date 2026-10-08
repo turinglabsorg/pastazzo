@@ -5,6 +5,7 @@
 pub mod account;
 pub mod clipboard;
 pub mod daemon;
+pub mod pairing;
 pub mod remote;
 pub mod secrets;
 pub mod state;

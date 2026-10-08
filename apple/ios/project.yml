@@ -1,0 +1,115 @@
+name: Pastazzo
+options:
+  bundleIdPrefix: org.pastazzo
+  postGenCommand: python3 fix-xcodegen-capabilities.py
+  deploymentTarget:
+    iOS: "16.0"
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    CURRENT_PROJECT_VERSION: 1
+    MARKETING_VERSION: "0.1.0"
+    TARGETED_DEVICE_FAMILY: "1,2"
+    REGISTER_APP_GROUPS: YES
+targets:
+  Pastazzo:
+    type: application
+    platform: iOS
+    attributes:
+      SystemCapabilities:
+        com.apple.ApplicationGroups.iOS:
+          enabled: 1
+    sources:
+      - Sources/App
+      - Sources/Shared
+      - Sources/QuickActions
+      - Assets.xcassets
+    dependencies:
+      - framework: Frameworks/PastazzoMobile.xcframework
+        embed: false
+      - target: PastazzoShare
+      - target: PastazzoWidget
+    entitlements:
+      path: Pastazzo.entitlements
+      properties:
+        com.apple.security.application-groups: [group.org.pastazzo.clipboard]
+    info:
+      path: Info.plist
+      properties:
+        CFBundleDisplayName: Pastazzo
+        UILaunchScreen: {}
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
+        UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait, UIInterfaceOrientationPortraitUpsideDown, UIInterfaceOrientationLandscapeLeft, UIInterfaceOrientationLandscapeRight]
+        CFBundleURLTypes:
+          - CFBundleURLSchemes: [pastazzo]
+        NSLocalNetworkUsageDescription: Connect to your self-hosted Pastazzo server on your local network.
+        NSCameraUsageDescription: Scan the pairing QR displayed by Pastazzo on your Mac.
+  PastazzoShare:
+    type: app-extension
+    platform: iOS
+    attributes:
+      SystemCapabilities:
+        com.apple.ApplicationGroups.iOS:
+          enabled: 1
+    sources:
+      - Sources/Share
+      - Sources/Shared
+    entitlements:
+      path: PastazzoShare.entitlements
+      properties:
+        com.apple.security.application-groups: [group.org.pastazzo.clipboard]
+    settings:
+      base:
+        APPLICATION_EXTENSION_API_ONLY: YES
+        PRODUCT_BUNDLE_IDENTIFIER: org.pastazzo.Pastazzo.Share
+    info:
+      path: ShareInfo.plist
+      properties:
+        CFBundleDisplayName: Pastazzo
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.share-services
+          NSExtensionPrincipalClass: "$(PRODUCT_MODULE_NAME).ShareViewController"
+          NSExtensionAttributes:
+            NSExtensionActivationRule:
+              NSExtensionActivationSupportsText: true
+              NSExtensionActivationSupportsWebURLWithMaxCount: 1
+              NSExtensionActivationSupportsImageWithMaxCount: 1
+  PastazzoWidget:
+    type: app-extension
+    platform: iOS
+    sources:
+      - Sources/Widget
+      - Sources/WidgetUI
+      - Sources/QuickActions
+      - Assets.xcassets
+    settings:
+      base:
+        APPLICATION_EXTENSION_API_ONLY: YES
+        PRODUCT_BUNDLE_IDENTIFIER: org.pastazzo.Pastazzo.Widget
+        ASSETCATALOG_COMPILER_APPICON_NAME: ""
+    info:
+      path: WidgetInfo.plist
+      properties:
+        CFBundleDisplayName: Pastazzo
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
+  PastazzoTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - Tests
+      - Sources/WidgetUI
+      - Sources/QuickActions
+    dependencies:
+      - target: Pastazzo
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+schemes:
+  Pastazzo:
+    build:
+      targets:
+        Pastazzo: all
+    test:
+      targets: [PastazzoTests]

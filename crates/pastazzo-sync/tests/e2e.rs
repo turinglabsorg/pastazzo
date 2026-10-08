@@ -19,6 +19,198 @@ use rand::rngs::OsRng;
 
 const PASSWORD: &str = "correct horse battery staple";
 
+#[test]
+fn qr_pairing_is_passwordless_single_device_and_syncs_both_ways() {
+    use pastazzo_sync::pairing;
+    let (_, _, links) = start_server(1);
+    let owner = account::join(&links[0], "seb", PASSWORD, "MacBook").unwrap();
+    let (link, offer) = pairing::create(&owner).unwrap();
+    let link = link.to_link().to_string();
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let phone = std::thread::spawn(move || {
+        pairing::join(&link, "iPhone", &mut |code| {
+            sender.send(code.to_owned()).unwrap();
+        })
+    });
+    let code = receiver
+        .recv_timeout(std::time::Duration::from_secs(20))
+        .unwrap();
+    for _ in 0..100 {
+        if pairing::status(&owner, &offer).unwrap().peer.is_some() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    assert!(pairing::approve(&owner, &offer, "WRONG CODE").is_err());
+    pairing::approve(&owner, &offer, &code).unwrap();
+    let phone = phone.join().unwrap().unwrap();
+    assert_eq!(
+        phone.account_key.fingerprint(),
+        owner.account_key.fingerprint()
+    );
+    assert!(pairing::status(&owner, &offer).unwrap().completed);
+    assert!(
+        account::device_names(&owner)
+            .unwrap()
+            .iter()
+            .any(|(name, _)| name == "iPhone")
+    );
+    let (owner, local) = device(owner, &temp_state("qr-mac"), false);
+    let (phone, mobile) = device(phone, &temp_state("qr-phone"), false);
+    local.copy(Content::Text("Mac QR test".into()));
+    owner.send_new_copies();
+    phone.receive_once(0).unwrap();
+    assert_eq!(mobile.applied(), [Content::Text("Mac QR test".into())]);
+    assert_eq!(*mobile.origins.lock().unwrap(), ["MacBook"]);
+    mobile.copy(Content::Text("iPhone QR test".into()));
+    phone.send_new_copies();
+    owner.receive_once(0).unwrap();
+    assert_eq!(local.applied(), [Content::Text("iPhone QR test".into())]);
+    assert_eq!(*local.origins.lock().unwrap(), ["iPhone"]);
+}
+
+#[test]
+fn qr_requests_reject_swaps_reuse_cancellation_and_revoked_owners() {
+    use pastazzo_core::api::{B64, PairingPeer, PairingReply};
+    use pastazzo_core::device::DeviceKeys;
+    use pastazzo_core::pairing;
+    use pastazzo_sync::pairing as client;
+    let (url, fingerprint, links) = start_server(1);
+    let owner = account::join(&links[0], "seb", PASSWORD, "MacBook").unwrap();
+    let other = login_approved(&url, &fingerprint, &owner, "Mac Pro");
+    let (link, offer) = client::create(&owner).unwrap();
+    let remote = Remote::new(&url);
+    let path = format!("/v1/pairings/{}/request", B64::encode(&offer.id));
+    let device = DeviceKeys::generate(&mut OsRng);
+    let peer = |device: &DeviceKeys, name: &str| PairingPeer {
+        device: B64(device.public().to_bytes().to_vec()),
+        name: name.into(),
+        proof: B64(link
+            .invite
+            .key
+            .start_proof("seb", &pairing::peer_message(&device.public(), name))
+            .to_vec()),
+    };
+    let valid = peer(&device, "iPhone");
+    let mut invalid = valid.clone();
+    invalid.name = "Swapped name".into();
+    assert!(
+        remote
+            .post_json::<_, PairingReply>(&path, &invalid)
+            .unwrap_err()
+            .contains("403")
+    );
+    invalid = valid.clone();
+    invalid.device = B64(DeviceKeys::generate(&mut OsRng)
+        .public()
+        .to_bytes()
+        .to_vec());
+    assert!(
+        remote
+            .post_json::<_, PairingReply>(&path, &invalid)
+            .unwrap_err()
+            .contains("403")
+    );
+    assert!(
+        remote
+            .post_json::<_, PairingReply>(&path, &valid)
+            .unwrap()
+            .grant
+            .is_none()
+    );
+    let second = peer(&DeviceKeys::generate(&mut OsRng), "Other iPhone");
+    assert!(
+        remote
+            .post_json::<_, PairingReply>(&path, &second)
+            .unwrap_err()
+            .contains("409")
+    );
+    assert!(
+        remote
+            .pairing_cancel(&other, &offer.id)
+            .unwrap_err()
+            .contains("403")
+    );
+    let grant = pairing::seal_grant(
+        &owner.device,
+        &offer.id,
+        &owner.account,
+        &device.public(),
+        &owner.account_key,
+        owner.account_secret.as_ref().unwrap(),
+        &mut OsRng,
+    );
+    assert!(
+        remote
+            .pairing_grant(&other, &offer.id, &grant)
+            .unwrap_err()
+            .contains("403")
+    );
+    remote.pairing_grant(&owner, &offer.id, &grant).unwrap();
+    remote.pairing_grant(&owner, &offer.id, &grant).unwrap();
+    let mut changed = grant.clone();
+    changed[100] ^= 1;
+    assert!(
+        remote
+            .pairing_grant(&owner, &offer.id, &changed)
+            .unwrap_err()
+            .contains("409")
+    );
+    let reply: PairingReply = remote.post_json(&path, &valid).unwrap();
+    let bytes = reply.grant.unwrap().0;
+    assert!(
+        !bytes
+            .windows(32)
+            .any(|w| w == owner.account_key.expose_secret())
+    );
+    assert!(
+        !bytes
+            .windows(32)
+            .any(|w| w == owner.account_secret.as_ref().unwrap().expose_secret())
+    );
+    pairing::open_grant(&link, &device, &bytes).unwrap();
+    assert!(
+        remote
+            .post_json::<_, PairingReply>(&path, &second)
+            .unwrap_err()
+            .contains("409")
+    );
+    remote.pairing_cancel(&owner, &offer.id).unwrap();
+    assert!(
+        remote
+            .post_json::<_, PairingReply>(&path, &valid)
+            .unwrap_err()
+            .contains("404")
+    );
+    let (_, expired_offer) = client::create(&owner).unwrap();
+    let _ = client::create(&owner).unwrap();
+    assert!(
+        client::status(&owner, &expired_offer)
+            .unwrap_err()
+            .contains("404")
+    );
+    let (revoked_link, revoked_offer) = client::create(&owner).unwrap();
+    remote.revoke_device(&other, &owner.device.id()).unwrap();
+    let proof = PairingPeer {
+        device: valid.device,
+        name: "iPhone".into(),
+        proof: B64(revoked_link
+            .invite
+            .key
+            .start_proof("seb", &pairing::peer_message(&device.public(), "iPhone"))
+            .to_vec()),
+    };
+    assert!(
+        remote
+            .post_json::<_, PairingReply>(
+                &format!("/v1/pairings/{}/request", B64::encode(&revoked_offer.id)),
+                &proof
+            )
+            .unwrap_err()
+            .contains("403")
+    );
+}
+
 /// Starts a server on a free local port and returns its URL, its
 /// fingerprint and invite links made the way the admin CLI makes them.
 fn start_server(invites: usize) -> (String, [u8; 32], Vec<String>) {
@@ -218,6 +410,139 @@ fn two_devices_sync_both_ways() {
     );
     restarted.receive_once(0).unwrap();
     assert!(restarted_clipboard.applied().is_empty());
+}
+
+#[test]
+fn a_retry_after_a_lost_upload_response_does_not_duplicate_the_item() {
+    use pastazzo_core::item::{ItemHeader, SealedItem};
+    let (url, fingerprint, links) = start_server(1);
+    let state = account::join(&links[0], "seb", PASSWORD, "laptop").unwrap();
+    let receiver = login_approved(&url, &fingerprint, &state, "Mac Pro");
+    let remote = Remote::new(&url);
+    let sealed = SealedItem::seal(
+        &state.account_key,
+        &state.account,
+        ItemHeader {
+            id: [17; 16],
+            device: state.device.id(),
+            epoch: state.account_key.epoch(),
+            created_at: pastazzo_sync::now(),
+        },
+        &Content::Text("Retry without duplicates".into()),
+        &mut OsRng,
+    )
+    .unwrap()
+    .to_bytes();
+    let cursor = remote.post_item(&state, &sealed).unwrap();
+    assert_eq!(remote.post_item(&state, &sealed).unwrap(), cursor);
+    let page = remote.items(&receiver, receiver.cursor, 0).unwrap();
+    assert_eq!(page.items.len(), 1);
+    let mut changed = sealed;
+    *changed.last_mut().unwrap() ^= 1;
+    assert!(
+        remote
+            .post_item(&state, &changed)
+            .unwrap_err()
+            .contains("409")
+    );
+}
+
+#[test]
+fn concurrent_outbox_retries_acknowledge_the_same_copy_once() {
+    let (url, fingerprint, links) = start_server(1);
+    let mut sender = account::join(&links[0], "seb", PASSWORD, "laptop").unwrap();
+    let receiver = login_approved(&url, &fingerprint, &sender, "Mac Pro");
+    let sender_path = temp_state("concurrent-outbox");
+    let receiver_path = temp_state("concurrent-receiver");
+    sender.server_url = "http://127.0.0.1:1".into();
+    let (offline, _) = device(sender, &sender_path, false);
+    let content = Content::Text("one copy, concurrent retries".into());
+    assert!(offline.send(&content).is_err());
+    let mut restored = State::load_with(&sender_path, &NoKeychain).unwrap();
+    restored.server_url = url;
+    let (first, _) = device(restored, &sender_path, false);
+    let (second, _) = device(
+        State::load_with(&sender_path, &NoKeychain).unwrap(),
+        &sender_path,
+        false,
+    );
+    let barrier = std::sync::Barrier::new(2);
+    std::thread::scope(|scope| {
+        let a = scope.spawn(|| {
+            barrier.wait();
+            first.flush_outbox()
+        });
+        let b = scope.spawn(|| {
+            barrier.wait();
+            second.flush_outbox()
+        });
+        a.join().unwrap().unwrap();
+        b.join().unwrap().unwrap();
+    });
+    let (receiver, clipboard) = device(receiver, &receiver_path, false);
+    receiver.receive_once(0).unwrap();
+    assert_eq!(clipboard.applied(), [content]);
+}
+
+#[test]
+fn failed_upload_survives_restart_and_is_retried_without_duplicates() {
+    use std::os::unix::fs::PermissionsExt;
+    let (url, fingerprint, links) = start_server(1);
+    let mut sender = account::join(&links[0], "seb", PASSWORD, "offline laptop").unwrap();
+    let receiver = login_approved(&url, &fingerprint, &sender, "Mac");
+    let sender_path = temp_state("offline");
+    let receiver_path = temp_state("online");
+    sender.server_url = "http://127.0.0.1:1".into();
+    let (offline, _) = device(sender, &sender_path, false);
+    let content = Content::Text("a copy made without a network".into());
+    assert!(offline.send(&content).is_err());
+    let root = sender_path.with_file_name("outbox");
+    let directory = std::fs::read_dir(&root)
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    let file = std::fs::read_dir(&directory)
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    assert_eq!(
+        std::fs::metadata(&directory).unwrap().permissions().mode() & 0o777,
+        0o700
+    );
+    assert_eq!(
+        std::fs::metadata(&file).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+    assert!(!String::from_utf8_lossy(&std::fs::read(&file).unwrap()).contains("a copy made"));
+    drop(offline);
+    let mut restored = State::load_with(&sender_path, &NoKeychain).unwrap();
+    restored.server_url = url;
+    let (restarted, _) = device(restored, &sender_path, false);
+    let (receiver, clipboard) = device(receiver, &receiver_path, false);
+    restarted.send_new_copies();
+    receiver.receive_once(0).unwrap();
+    assert_eq!(clipboard.applied(), [content]);
+    assert!(!file.exists());
+    restarted.flush_outbox().unwrap();
+    receiver.receive_once(0).unwrap();
+    assert_eq!(clipboard.applied().len(), 1);
+    let mut pending = State::load_with(&sender_path, &NoKeychain).unwrap();
+    pending.server_url = "http://127.0.0.1:1".into();
+    let (pending, _) = device(pending, &sender_path, false);
+    assert!(
+        pending
+            .send(&Content::Text("discard this pending copy".into()))
+            .is_err()
+    );
+    pastazzo_sync::daemon::cancel_pending(&sender_path).unwrap();
+    assert!(!root.exists());
+    restarted.flush_outbox().unwrap();
+    receiver.receive_once(0).unwrap();
+    assert_eq!(clipboard.applied().len(), 1);
 }
 
 #[test]

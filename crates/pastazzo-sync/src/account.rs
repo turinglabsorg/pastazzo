@@ -34,7 +34,7 @@ const APPROVAL_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 const APPROVAL_POLL: Duration = Duration::from_secs(2);
 
 /// Fetches the server identity and checks it against the pinned fingerprint.
-fn pinned_identity(remote: &Remote, fingerprint: &[u8; 32]) -> Result<ServerIdentity> {
+pub(crate) fn pinned_identity(remote: &Remote, fingerprint: &[u8; 32]) -> Result<ServerIdentity> {
     let info = remote.server_info()?;
     if info.version != pastazzo_core::PROTOCOL_VERSION {
         return Err(format!(

@@ -311,24 +311,7 @@ impl State {
     /// [`State::save`] with another cursor, for the sync loop.
     pub fn save_with_cursor(&self, path: &Path, cursor: u64) -> Result<()> {
         let in_file = self.storage == KeyStorage::File;
-        let stored = Stored {
-            server_url: self.server_url.clone(),
-            identity: B64(self.identity.to_bytes().to_vec()),
-            username: self.username.clone(),
-            account: B64(self.account.to_vec()),
-            device_name: self.device_name.clone(),
-            cursor,
-            key_storage: Some(self.storage),
-            device_id: Some(B64(self.device.id().to_vec())),
-            epoch: in_file.then(|| self.account_key.epoch()),
-            account_key: in_file.then(|| B64(self.account_key.expose_secret().to_vec())),
-            device: in_file.then(|| B64(self.device.to_secret_bytes().to_vec())),
-            account_secret: self
-                .account_secret
-                .as_ref()
-                .filter(|_| in_file)
-                .map(|s| B64(s.expose_secret().to_vec())),
-        };
+        let stored = self.stored(cursor, in_file);
         let json = Zeroizing::new(serde_json::to_vec_pretty(&stored).map_err(|e| e.to_string())?);
         let dir = path.parent().ok_or("state path has no parent directory")?;
         fs::DirBuilder::new()
@@ -347,6 +330,69 @@ impl State {
         file.write_all(&json).map_err(|e| e.to_string())?;
         file.sync_all().map_err(|e| e.to_string())?;
         fs::rename(&tmp, path).map_err(|e| format!("write {}: {e}", path.display()))
+    }
+
+    fn stored(&self, cursor: u64, in_file: bool) -> Stored {
+        Stored {
+            server_url: self.server_url.clone(),
+            identity: B64(self.identity.to_bytes().to_vec()),
+            username: self.username.clone(),
+            account: B64(self.account.to_vec()),
+            device_name: self.device_name.clone(),
+            cursor,
+            key_storage: Some(if in_file {
+                KeyStorage::File
+            } else {
+                self.storage
+            }),
+            device_id: Some(B64(self.device.id().to_vec())),
+            epoch: in_file.then(|| self.account_key.epoch()),
+            account_key: in_file.then(|| B64(self.account_key.expose_secret().to_vec())),
+            device: in_file.then(|| B64(self.device.to_secret_bytes().to_vec())),
+            account_secret: self
+                .account_secret
+                .as_ref()
+                .filter(|_| in_file)
+                .map(|s| B64(s.expose_secret().to_vec())),
+        }
+    }
+
+    /// Sends the recovery document directly to hush; only ciphertext is returned.
+    pub fn backup_to_hush(&self, public_key: &Path, hush: &str) -> Result<Vec<u8>> {
+        use std::process::{Command, Stdio};
+        let document = Zeroizing::new(
+            serde_json::to_vec(&self.stored(self.cursor, true)).map_err(|e| e.to_string())?,
+        );
+        let mut child = Command::new(hush)
+            .args([
+                "box",
+                "seal",
+                "--to",
+                "pastazzo",
+                "--uses",
+                "1",
+                "--pubkey-file",
+            ])
+            .arg(public_key)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|e| format!("can't start hush: {e}"))?;
+        child
+            .stdin
+            .take()
+            .ok_or("hush has no input pipe")?
+            .write_all(&document)
+            .map_err(|e| format!("can't send the backup to hush: {e}"))?;
+        let output = child.wait_with_output().map_err(|e| e.to_string())?;
+        if !output.status.success() {
+            return Err(format!(
+                "hush couldn't encrypt the backup: {}",
+                String::from_utf8_lossy(&output.stderr)
+            ));
+        }
+        Ok(output.stdout)
     }
 }
 
@@ -484,6 +530,33 @@ mod tests {
         state.forget_with(&path, &keychain).unwrap();
         assert!(!path.exists());
         assert!(keychain.entries.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn recovery_document_restores_keychain_keys_and_account_metadata() {
+        let keychain = MemoryKeychain::default();
+        let path = temp_path();
+        let mut original = state();
+        original.save_new_with(&path, &keychain).unwrap();
+        let document =
+            Zeroizing::new(serde_json::to_vec(&original.stored(original.cursor, true)).unwrap());
+        let backup = temp_path();
+        fs::create_dir_all(backup.parent().unwrap()).unwrap();
+        fs::write(&backup, &document).unwrap();
+        let restored = State::load_with(&backup, &NoKeychain).unwrap();
+        assert_eq!(restored.account, original.account);
+        assert_eq!(restored.cursor, original.cursor);
+        assert_eq!(restored.device.id(), original.device.id());
+        assert_eq!(
+            restored.account_key.expose_secret(),
+            original.account_key.expose_secret()
+        );
+        assert_eq!(
+            restored.account_secret.unwrap().expose_secret(),
+            original.account_secret.unwrap().expose_secret()
+        );
+        fs::remove_dir_all(backup.parent().unwrap()).unwrap();
+        fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 
     #[test]

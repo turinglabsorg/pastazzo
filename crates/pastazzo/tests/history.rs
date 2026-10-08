@@ -5,10 +5,12 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 fn data_dir() -> PathBuf {
+    static SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let dir = std::env::temp_dir().join(format!(
-        "pastazzo-history-{}-{}",
+        "pastazzo-history-{}-{}-{}",
         std::process::id(),
-        rand_suffix()
+        rand_suffix(),
+        SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     ));
     std::fs::create_dir_all(&dir).unwrap();
     dir

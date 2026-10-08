@@ -361,7 +361,11 @@ impl Store {
             params![&account[..], &item[..], &device[..], data, now as i64],
         )?;
         if inserted == 0 {
-            return Ok(None);
+            return tx.query_row(
+                "SELECT seq FROM items WHERE account = ?1 AND item_id = ?2 AND device = ?3 AND data = ?4",
+                params![&account[..], &item[..], &device[..], data],
+                |row| row.get::<_, i64>(0).map(|cursor| cursor as u64),
+            ).optional();
         }
         let seq = tx.last_insert_rowid() as u64;
         tx.execute(
@@ -508,6 +512,12 @@ mod tests {
         assert_eq!(
             store
                 .add_item(&[3; 16], &[1; 16], &[7; 16], b"a", 1)
+                .unwrap(),
+            Some(first)
+        );
+        assert_eq!(
+            store
+                .add_item(&[3; 16], &[1; 16], &[7; 16], b"changed", 1)
                 .unwrap(),
             None
         );

@@ -1582,6 +1582,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "pastazzo-mobile"
+version = "0.1.0"
+dependencies = [
+ "apple-native-keyring-store",
+ "axum",
+ "keyring-core",
+ "pastazzo-core",
+ "pastazzo-server",
+ "pastazzo-sync",
+ "rand",
+ "serde",
+ "serde_json",
+ "tokio",
+ "zeroize",
+]
+
+[[package]]
 name = "pastazzo-server"
 version = "0.1.0"
 dependencies = [

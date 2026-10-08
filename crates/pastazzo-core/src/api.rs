@@ -194,6 +194,33 @@ pub struct ErrorBody {
     pub error: String,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PairingCreate {
+    pub id: B64,
+    pub verifier: B64,
+    pub username: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PairingPeer {
+    pub device: B64,
+    pub name: String,
+    pub proof: B64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PairingStatus {
+    pub expires_at: u64,
+    pub peer: Option<PairingPeer>,
+    pub completed: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PairingReply {
+    pub account: B64,
+    pub grant: Option<B64>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -35,6 +35,7 @@ use serde::Deserialize;
 use tokio::sync::Notify;
 
 use crate::store::{Insert, Store};
+mod pairing;
 
 /// Largest request body: one item at the image limit, padded, plus headers.
 const MAX_BODY_BYTES: usize = MAX_IMAGE_BYTES + 2 * 1024 * 1024;
@@ -71,6 +72,7 @@ pub struct App {
     attempts: Mutex<Attempts>,
     waiters: Mutex<HashMap<Id, Arc<Notify>>>,
     transfers: Mutex<HashMap<Id, Transfers>>,
+    pairings: Mutex<HashMap<Id, pairing::Session>>,
 }
 
 #[derive(Default)]
@@ -167,6 +169,7 @@ impl App {
             attempts: Mutex::default(),
             waiters: Mutex::default(),
             transfers: Mutex::default(),
+            pairings: Mutex::default(),
         }
     }
 
@@ -404,6 +407,13 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/v1/register/finish", post(register_finish))
         .route("/v1/login/start", post(login_start))
         .route("/v1/login/finish", post(login_finish))
+        .route("/v1/pairings", post(pairing::create))
+        .route(
+            "/v1/pairings/{id}",
+            get(pairing::status).delete(pairing::cancel),
+        )
+        .route("/v1/pairings/{id}/request", post(pairing::request))
+        .route("/v1/pairings/{id}/grant", put(pairing::grant))
         .route("/v1/devices", get(list_devices))
         .route("/v1/devices/{id}", put(put_device).delete(revoke_device))
         .route("/v1/devices/{id}/grant", put(put_grant).get(get_grant))

@@ -3,3 +3,7 @@
 /test-harness/*-harness.png
 /extension/schemas/gschemas.compiled
 *.shell-extension.zip
+/apple/macos/build
+/apple/ios/build
+/apple/ios/Pastazzo.xcodeproj
+/apple/ios/Frameworks

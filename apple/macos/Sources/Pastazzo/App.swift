@@ -13,6 +13,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var settings: SettingsWindowController?
     private var menu: NSMenu?
     private var subscriptions: Set<AnyCancellable> = []
+    private var pendingPairing = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         guard store.isAvailable else {
@@ -49,6 +50,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self?.statusItem?.button?.title = parts.isEmpty ? "" : " " + parts.joined(separator: "  ")
             }
             .store(in: &subscriptions)
+        if pendingPairing { settings?.showPairing(); pendingPairing = false }
+    }
+
+    func application(_ application: NSApplication, open urls: [URL]) {
+        guard urls.contains(where: { $0.scheme == "pastazzo-mac" && $0.host == "pair" }) else { return }
+        if let settings { settings.showPairing() } else { pendingPairing = true }
     }
 
     /// A click opens the shelf; a right-click (or Control-click) shows the menu.
