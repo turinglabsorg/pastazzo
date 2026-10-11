@@ -31,9 +31,9 @@ Native [iOS](apple/ios/README.md) and [Android](android/README.md) apps join the
 curl -fsSL https://raw.githubusercontent.com/turinglabsorg/pastazzo/main/scripts/install.sh | bash
 ```
 
-The same command updates an existing install. It pulls the latest code, builds `pastazzo` (the history store) and `pastazzo-sync`, reinstalls the GNOME extension and the sync service, and keeps your history.
+The same command updates an existing install. It pulls the latest code, builds `pastazzo` and `pastazzo-sync`, and keeps your history. On Hyprland (including Omarchy) it installs the shelf in `omarchy/`; on GNOME it installs the Shell extension. Force one with `PASTAZZO_SURFACE=gnome` or `PASTAZZO_SURFACE=wayland`, or pass `--gnome` / `--wayland`.
 
-After every install or update, log out and back in: GNOME Shell on Wayland doesn't reliably reload extension code inside a running session. Then check that the extension is on:
+On GNOME, log out and back in after every install or update: GNOME Shell on Wayland doesn't reliably reload extension code inside a running session. Then check that the extension is on:
 
 ```bash
 gnome-extensions enable pastazzo@turinglabs.org

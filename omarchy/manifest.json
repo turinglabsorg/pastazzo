@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "id": "turinglabs.pastazzo",
+  "name": "Pastazzo",
+  "version": "0.1.0",
+  "author": "Turing Labs",
+  "license": "MIT",
+  "description": "Pastazzo clipboard shelf for Hyprland. Click copies, double-click pastes.",
+  "kinds": ["overlay"],
+  "keepLoaded": true,
+  "entryPoints": {
+    "overlay": "Shelf.qml"
+  }
+}

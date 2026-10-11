@@ -17,13 +17,37 @@ need_cmd() {
   command -v "$1" >/dev/null 2>&1
 }
 
+# gnome or wayland. PASTAZZO_SURFACE wins, then --gnome/--wayland, then the session.
+choose_surface() {
+  if [[ -n ${PASTAZZO_SURFACE:-} ]]; then
+    printf '%s\n' "$PASTAZZO_SURFACE"
+    return
+  fi
+  case "${1:-}" in
+    --gnome) printf 'gnome\n'; return ;;
+    --wayland) printf 'wayland\n'; return ;;
+  esac
+  local desktop="${XDG_CURRENT_DESKTOP:-} ${XDG_SESSION_DESKTOP:-}"
+  if [[ -n ${OMARCHY_PATH:-} || -d /usr/share/omarchy || $desktop == *Hyprland* ]]; then
+    printf 'wayland\n'
+  else
+    printf 'gnome\n'
+  fi
+}
+
 install_missing_deps() {
+  local surface="$1"
   local missing=()
 
   need_cmd git || missing+=(git)
   need_cmd cargo || missing+=(cargo)
-  need_cmd glib-compile-schemas || missing+=(libglib2.0-bin)
-  need_cmd gnome-extensions || missing+=(gnome-shell-common)
+  if [[ $surface == gnome ]]; then
+    need_cmd glib-compile-schemas || missing+=(libglib2.0-bin)
+    need_cmd gnome-extensions || missing+=(gnome-shell-common)
+  else
+    need_cmd wl-paste || missing+=(wl-clipboard)
+    need_cmd wtype || missing+=(wtype)
+  fi
 
   if [ "${#missing[@]}" -eq 0 ]; then
     return
@@ -36,8 +60,47 @@ install_missing_deps() {
     return
   fi
 
-  echo "Missing required commands. Install git, cargo, glib-compile-schemas and gnome-extensions, then rerun this script." >&2
+  if [[ $surface == gnome ]]; then
+    echo "Missing required commands. Install git, cargo, glib-compile-schemas and gnome-extensions, then rerun this script." >&2
+  else
+    echo "Missing required commands. Install git, cargo, wl-clipboard and wtype, then rerun this script." >&2
+  fi
   exit 1
+}
+
+install_wayland() {
+  local plugin_id="turinglabs.pastazzo"
+  local plugin_dir="${XDG_CONFIG_HOME:-$HOME/.config}/omarchy/plugins/$plugin_id"
+  rm -rf "$plugin_dir"
+  mkdir -p "$plugin_dir"
+  cp -a "$SRC_DIR/omarchy/." "$plugin_dir/"
+  chmod 0755 "$plugin_dir/capture.sh" "$plugin_dir/paste.sh"
+
+  if need_cmd omarchy-shell; then
+    omarchy-shell shell rescanPlugins >/dev/null 2>&1 || true
+  fi
+  if need_cmd omarchy; then
+    omarchy plugin enable "$plugin_id" >/dev/null 2>&1 || true
+  fi
+
+  local bindings="${XDG_CONFIG_HOME:-$HOME/.config}/hypr/bindings.lua"
+  local marker="turinglabs.pastazzo"
+  if [[ -f $bindings ]] && ! grep -q "$marker" "$bindings"; then
+    cat >>"$bindings" <<'EOF'
+
+-- Pastazzo shelf. Click copies, double-click or Shift+Enter pastes.
+o.bind("SHIFT + ALT + V", "Pastazzo", "omarchy-shell shell toggle turinglabs.pastazzo")
+EOF
+  fi
+
+  local hypr="${XDG_CONFIG_HOME:-$HOME/.config}/hypr/hyprland.lua"
+  if [[ -f $hypr ]] && ! grep -q "turinglabs-pastazzo" "$hypr"; then
+    cat >>"$hypr" <<'EOF'
+
+-- Pastazzo shelf pops without a layer-shell fade.
+hl.layer_rule({ match = { namespace = "^turinglabs-pastazzo$" }, no_anim = true, animation = "none" })
+EOF
+  fi
 }
 
 sync_source() {
@@ -93,18 +156,31 @@ migrate_history() {
 }
 
 main() {
-  install_missing_deps
+  local surface
+  surface=$(choose_surface "${1:-}")
+  if [[ ${1:-} == --gnome || ${1:-} == --wayland ]]; then
+    shift
+  fi
+
+  install_missing_deps "$surface"
   sync_source
   install_binary
   install_sync_units
-  install_extension
   migrate_history
 
-  echo "Pastazzo installed."
-  echo "Shortcut: Shift+Alt+V"
-  echo "Required next step: log out and log back in."
-  echo "After login, verify or enable it with:"
-  echo "  gnome-extensions enable $EXT_UUID"
+  if [[ $surface == wayland ]]; then
+    install_wayland
+    echo "Pastazzo installed for Hyprland."
+    echo "Shortcut: Shift+Alt+V"
+    echo "Click copies. Double-click or Shift+Enter pastes."
+  else
+    install_extension
+    echo "Pastazzo installed for GNOME."
+    echo "Shortcut: Shift+Alt+V"
+    echo "Required next step: log out and log back in."
+    echo "After login, verify or enable it with:"
+    echo "  gnome-extensions enable $EXT_UUID"
+  fi
 }
 
 main "$@"
