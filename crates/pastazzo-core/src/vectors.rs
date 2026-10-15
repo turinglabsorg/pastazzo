@@ -195,6 +195,21 @@ fn vectors() -> Vec<(&'static str, String)> {
     ));
     vectors.push(("pairing grant length", pairing_grant.len().to_string()));
     vectors.push(("pairing grant sha256", hex(&Sha256::digest(&pairing_grant))));
+    let receipt_header = ItemHeader {
+        id: seq(0x80),
+        ..header
+    };
+    let receipt = crate::receipt::SealedReceipt::seal_with_nonce(
+        &key,
+        &account,
+        receipt_header,
+        &header.id,
+        &device,
+        seq(0xd0),
+    )
+    .to_bytes();
+    vectors.push(("sealed receipt length", receipt.len().to_string()));
+    vectors.push(("sealed receipt sha256", hex(&Sha256::digest(&receipt))));
     vectors.extend(opaque_vectors());
     vectors
 }
@@ -274,6 +289,11 @@ const EXPECTED: &[(&str, &str)] = &[
     (
         "pairing grant sha256",
         "adf592192d392feae3002513957f8b7e946ce450ce6d8d0ad0f541a58cfa2038",
+    ),
+    ("sealed receipt length", "341"),
+    (
+        "sealed receipt sha256",
+        "0d56d45cdd5df3268c7a06072e36860df01ebda706b503516cfbe6fbf252f383",
     ),
     (
         "opaque server fingerprint",

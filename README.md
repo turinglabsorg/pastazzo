@@ -75,6 +75,14 @@ On GNOME the shortcut can be changed in the settings, or with `gnome-extensions 
 
 The history lives in `~/.local/share/pastazzo/items` on both systems, one file per item.
 
+### Device delivery confirmations
+
+The Mac shelf shows which devices confirmed saving each clipboard item, alongside its device of origin. Hover over the delivery status for receipt times. Other paired devices remain awaiting confirmation; a successful server upload alone does not confirm their receipt. Search also matches confirmed receiving devices.
+
+Receipts are signed by the receiving device, encrypted end to end, and sent only after local storage succeeds. They use a separate optional feed, so older clients keep syncing and older servers leave delivery unconfirmed. Updated iOS and Android engines also emit receipts when their app refreshes. Existing unconfirmed history is not automatically assigned historical delivery times.
+
+Run `sh apple/macos/test-delivery.sh` for native history decoding and delivery status checks, or add `--render /tmp/pastazzo-delivery-preview` for synthetic light/dark card previews.
+
 ## Sync across devices
 
 Copy on one device, paste on the others. Clipboards hold passwords, tokens and private screenshots, so the sync follows one rule: **only your devices can read your clipboard**. Not the server, not whoever runs it, not a proxy or relay in front of it, not the network. Pastazzo doesn't rely on HTTPS for any of this, and it doesn't trust the server: see [How it works](#how-it-works).

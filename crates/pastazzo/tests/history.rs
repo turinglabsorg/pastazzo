@@ -169,3 +169,143 @@ fn an_older_open_history_is_closed_on_the_next_copy() {
     }
     assert_eq!(origins(&data, "before").len(), 1);
 }
+
+fn items(data: &Path, query: &str) -> Vec<serde_json::Value> {
+    serde_json::from_str(&pastazzo(data, &["search", query], b"")).unwrap()
+}
+
+#[test]
+fn sync_links_survive_reuse_but_not_a_fresh_copy() {
+    for (command, payload) in [
+        (vec!["add"], b"a routed clipboard item".as_slice()),
+        (
+            vec!["add-image", "image/png"],
+            b"\x89PNG routed image".as_slice(),
+        ),
+    ] {
+        let data = data_dir();
+        let mut args = command.clone();
+        args.extend(["--origin", "Workstation", "--source-app", "firefox"]);
+        let id = pastazzo(&data, &args, payload).trim().to_owned();
+        let mime = if command[0] == "add" {
+            "text/plain"
+        } else {
+            "image/png"
+        };
+        let wire_id = "AQEBAQEBAQEBAQEBAQEBAQ";
+        pastazzo(&data, &["link-sync", wire_id, mime], payload);
+        let snapshot = serde_json::json!({"supported":true,"peers":[],"items":[{
+            "item_id":wire_id,"origin_name":"Workstation","origin_device":"sender", "created_at":100,
+            "uploaded_at":101,"receivers":[{"device_id":"receiver","device_name":"iPhone","received_at":102}]
+        }]});
+        let sync = data.join("pastazzo/sync");
+        std::fs::create_dir_all(&sync).unwrap();
+        std::fs::write(sync.join("deliveries.json"), snapshot.to_string()).unwrap();
+        let copied_at = items(&data, "")[0]["copied_at"].clone();
+        let new_id = pastazzo(&data, &["touch", &id, "--replay"], b"")
+            .trim()
+            .to_owned();
+        let mut capture = command.clone();
+        capture.extend([
+            "--origin",
+            "Wrong device",
+            "--source-app",
+            "quickshell",
+            "--ignore-replay",
+        ]);
+        assert_eq!(pastazzo(&data, &capture, payload).trim(), new_id);
+        let found = items(&data, "iPhone");
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0]["origin"], "Workstation");
+        assert_eq!(found[0]["copied_at"], copied_at);
+        assert_eq!(
+            found[0]["delivery"]["receivers"][0]["device_name"],
+            "iPhone"
+        );
+        assert!(!found[0].as_object().unwrap().contains_key("destinations"));
+        assert!(
+            files(&data.join("pastazzo/items"))
+                .iter()
+                .all(|path| mode(path) == 0o600)
+        );
+        // The same content copied afresh has a new sync identity. Old receipts
+        // must never be presented as proof of delivery of this new copy.
+        pastazzo(&data, &capture, payload);
+        assert!(items(&data, "")[0]["delivery"].is_null());
+        assert!(items(&data, "iPhone").is_empty());
+    }
+}
+
+#[test]
+fn legacy_app_destinations_are_never_mistaken_for_receiving_devices() {
+    let data = data_dir();
+    pastazzo(
+        &data,
+        &["add", "--origin", "Laptop → firefox ⇒ code"],
+        b"legacy",
+    );
+    let legacy = items(&data, "firefox");
+    assert_eq!(legacy[0]["origin"], "Laptop");
+    assert_eq!(legacy[0]["source_app"], "firefox");
+    assert!(legacy[0]["delivery"].is_null());
+    assert!(items(&data, "code").is_empty());
+}
+
+#[test]
+fn source_metadata_is_pruned_with_the_item() {
+    let data = data_dir();
+    let old_id = pastazzo(&data, &["add", "--source-app", "firefox"], b"old")
+        .trim()
+        .to_owned();
+    for index in 0..251 {
+        pastazzo(&data, &["add"], format!("item {index}").as_bytes());
+    }
+    assert!(!data.join(format!("pastazzo/items/{old_id}.meta")).exists());
+    assert_eq!(files(&data.join("pastazzo/items")).len(), 250);
+    pastazzo(&data, &["clear"], b"");
+    assert!(!data.join("pastazzo/items").exists());
+}
+
+#[test]
+fn missing_items_and_invalid_sync_ids_cannot_create_metadata() {
+    let data = data_dir();
+    for id in ["../escape", "AQEBAQEBAQEBAQEBAQEBAQ"] {
+        let output = Command::new(env!("CARGO_BIN_EXE_pastazzo"))
+            .args(["link-sync", id, "text/plain"])
+            .env("XDG_DATA_HOME", &data)
+            .stdin(Stdio::null())
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+    }
+    assert!(items(&data, "").is_empty());
+}
+
+#[test]
+fn linking_a_sync_event_checks_the_full_saved_payload() {
+    let data = data_dir();
+    let id = pastazzo(&data, &["add"], b"expected content")
+        .trim()
+        .to_owned();
+    std::fs::write(
+        data.join(format!("pastazzo/items/{id}.txt")),
+        b"different saved content",
+    )
+    .unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_pastazzo"))
+        .args(["link-sync", "AQEBAQEBAQEBAQEBAQEBAQ", "text/plain"])
+        .env("XDG_DATA_HOME", &data)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(b"expected content")
+        .unwrap();
+    assert!(!child.wait().unwrap().success());
+    assert!(!data.join(format!("pastazzo/items/{id}.meta")).exists());
+}

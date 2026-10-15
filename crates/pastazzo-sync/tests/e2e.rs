@@ -20,6 +20,235 @@ use rand::rngs::OsRng;
 const PASSWORD: &str = "correct horse battery staple";
 
 #[test]
+fn receipts_wait_for_server_support_and_retry_unchanged_after_restart() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let supported = Arc::new(AtomicBool::new(false));
+    let (url, fingerprint, links) = start_server_with_receipts(1, supported.clone());
+    let sender = account::join(&links[0], "seb", PASSWORD, "MacBook").unwrap();
+    let receiver = login_approved(&url, &fingerprint, &sender, "Mac Pro");
+    let receiver_id = pastazzo_core::api::B64::encode(&receiver.device.id());
+    let receiver_path = temp_state("legacy-receipts");
+    let (sender, _) = device(sender, &temp_state("legacy-receipts-source"), false);
+    let (receiver, clipboard) = device(receiver, &receiver_path, false);
+    let content = Content::Text("offline receipt fixture".into());
+    sender.send(&content).unwrap();
+    receiver.receive_once(0).unwrap();
+    assert_eq!(clipboard.applied(), [content]);
+    assert!(!receiver.delivery_snapshot().unwrap().supported);
+    let outbox = receiver_path
+        .with_extension("deliveries")
+        .join(receiver_id)
+        .join("outbox");
+    let queued = std::fs::read_dir(&outbox)
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    let bytes = std::fs::read(&queued).unwrap();
+    drop(receiver);
+    let (restarted, clipboard) = device(
+        State::load_with(&receiver_path, &NoKeychain).unwrap(),
+        &receiver_path,
+        false,
+    );
+    restarted.receive_once(0).unwrap();
+    assert_eq!(std::fs::read(&queued).unwrap(), bytes);
+    supported.store(true, Ordering::SeqCst);
+    restarted.receive_once(0).unwrap();
+    sender.receive_once(0).unwrap();
+    assert!(!queued.exists());
+    assert!(clipboard.applied().is_empty());
+    assert_eq!(
+        sender.delivery_snapshot().unwrap().items[0].receivers[0].device_name,
+        "Mac Pro"
+    );
+}
+
+#[test]
+fn a_failed_local_save_cannot_confirm_delivery_or_advance_the_cursor() {
+    let (url, fingerprint, links) = start_server(1);
+    let sender = account::join(&links[0], "seb", PASSWORD, "MacBook").unwrap();
+    let receiver = login_approved(&url, &fingerprint, &sender, "Mac Pro");
+    let receiver_path = temp_state("failed-save");
+    let (sender, _) = device(sender, &temp_state("failed-save-source"), false);
+    let (receiver, clipboard) = device(receiver, &receiver_path, false);
+    clipboard
+        .fail_save
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    sender
+        .send(&Content::Text("persist before confirming".into()))
+        .unwrap();
+    let cursor = State::load_with(&receiver_path, &NoKeychain)
+        .unwrap()
+        .cursor;
+    assert!(receiver.receive_once(0).is_err());
+    assert_eq!(
+        State::load_with(&receiver_path, &NoKeychain)
+            .unwrap()
+            .cursor,
+        cursor
+    );
+    sender.receive_once(0).unwrap();
+    assert!(
+        sender.delivery_snapshot().unwrap().items[0]
+            .receivers
+            .is_empty()
+    );
+    receiver.receive_once(0).unwrap();
+    sender.receive_once(0).unwrap();
+    assert_eq!(
+        sender.delivery_snapshot().unwrap().items[0].receivers.len(),
+        1
+    );
+    assert!(clipboard.contains_stored(&Content::Text("persist before confirming".into())));
+}
+
+#[test]
+fn receipt_http_api_binds_the_authenticated_receiver_and_retries_idempotently() {
+    use pastazzo_core::{item::ItemHeader, receipt::SealedReceipt};
+    let (url, fingerprint, links) = start_server(1);
+    let owner = account::join(&links[0], "seb", PASSWORD, "MacBook").unwrap();
+    let phone = login_approved(&url, &fingerprint, &owner, "iPhone");
+    let receipt = SealedReceipt::seal(
+        &phone.account_key,
+        &phone.account,
+        ItemHeader {
+            id: [91; 16],
+            device: phone.device.id(),
+            epoch: phone.account_key.epoch(),
+            created_at: pastazzo_sync::now(),
+        },
+        &[92; 16],
+        &phone.device,
+        &mut OsRng,
+    )
+    .unwrap()
+    .to_bytes();
+    let remote = Remote::new(&url);
+    assert!(
+        remote
+            .post_receipt(&owner, &receipt)
+            .unwrap_err()
+            .contains("403")
+    );
+    let cursor = remote.post_receipt(&phone, &receipt).unwrap();
+    assert_eq!(remote.post_receipt(&phone, &receipt).unwrap(), cursor);
+    let page = remote.receipts(&owner, 0).unwrap().unwrap();
+    assert_eq!(page.cursor, cursor);
+    assert_eq!(page.receipts.len(), 1);
+    assert_eq!(page.receipts[0].0, receipt);
+    assert!(remote.items(&owner, 0, 0).unwrap().items.is_empty());
+    assert!(
+        remote
+            .receipts(&owner, cursor)
+            .unwrap()
+            .unwrap()
+            .receipts
+            .is_empty()
+    );
+    let mut changed = receipt;
+    *changed.last_mut().unwrap() ^= 1;
+    assert!(
+        remote
+            .post_receipt(&phone, &changed)
+            .unwrap_err()
+            .contains("409")
+    );
+    assert!(
+        remote
+            .post_receipt(&phone, b"invalid")
+            .unwrap_err()
+            .contains("400")
+    );
+}
+
+#[test]
+fn delivery_is_confirmed_only_after_the_other_device_saves_the_item() {
+    let (url, fingerprint, links) = start_server(1);
+    let owner = account::join(&links[0], "seb", PASSWORD, "MacBook").unwrap();
+    let phone = login_approved(&url, &fingerprint, &owner, "iPhone");
+    let (owner, source) = device(owner, &temp_state("receipt-source"), false);
+    let (phone, destination) = device(phone, &temp_state("receipt-phone"), false);
+    owner
+        .send(&Content::Text("delivery confirmation fixture".into()))
+        .unwrap();
+    let uploaded = owner.delivery_snapshot().unwrap();
+    assert!(uploaded.items[0].uploaded_at.is_some());
+    assert!(uploaded.items[0].receivers.is_empty());
+    phone.receive_once(0).unwrap();
+    assert_eq!(
+        destination.applied(),
+        [Content::Text("delivery confirmation fixture".into())]
+    );
+    owner.receive_once(0).unwrap();
+    let confirmed = owner.delivery_snapshot().unwrap();
+    assert_eq!(confirmed.items[0].receivers.len(), 1);
+    assert_eq!(confirmed.items[0].receivers[0].device_name, "iPhone");
+    assert!(source.applied().is_empty());
+    phone.receive_once(0).unwrap();
+    owner.receive_once(0).unwrap();
+    assert_eq!(
+        owner.delivery_snapshot().unwrap().items[0].receivers.len(),
+        1
+    );
+}
+
+#[test]
+fn receipt_recheck_requires_saved_content_and_does_not_reapply_or_move_cursor() {
+    let (url, fingerprint, links) = start_server(1);
+    let sender = account::join(&links[0], "seb", PASSWORD, "Linux").unwrap();
+    let receiver = login_approved(&url, &fingerprint, &sender, "Mac Pro");
+    let sender_path = temp_state("recheck-source");
+    let receiver_path = temp_state("recheck-destination");
+    let (sender, source) = device(sender, &sender_path, false);
+    let (receiver, mut saved) = device(receiver, &receiver_path, false);
+    let content = Content::Text("stored before receipt support".into());
+    sender.send(&content).unwrap();
+    let id: pastazzo_core::Id =
+        pastazzo_core::api::B64::decode(&sender.delivery_snapshot().unwrap().items[0].item_id)
+            .unwrap()
+            .try_into()
+            .unwrap();
+    assert!(
+        receiver
+            .confirm_stored(&id)
+            .unwrap_err()
+            .contains("not saved")
+    );
+    sender.receive_once(0).unwrap();
+    assert!(
+        sender.delivery_snapshot().unwrap().items[0]
+            .receivers
+            .is_empty()
+    );
+    saved.remember(&content, "Linux").unwrap();
+    let cursor = State::load_with(&receiver_path, &NoKeychain)
+        .unwrap()
+        .cursor;
+    receiver.confirm_stored(&id).unwrap();
+    sender.receive_once(0).unwrap();
+    let confirmed = sender.delivery_snapshot().unwrap();
+    assert_eq!(confirmed.items[0].receivers.len(), 1);
+    assert_eq!(confirmed.items[0].receivers[0].device_name, "Mac Pro");
+    assert!(saved.applied().is_empty());
+    assert!(source.applied().is_empty());
+    assert_eq!(
+        State::load_with(&receiver_path, &NoKeychain)
+            .unwrap()
+            .cursor,
+        cursor
+    );
+    receiver.confirm_stored(&id).unwrap();
+    sender.receive_once(0).unwrap();
+    assert_eq!(
+        sender.delivery_snapshot().unwrap().items[0].receivers.len(),
+        1
+    );
+    assert!(receiver.confirm_stored(&[255; 16]).is_err());
+}
+
+#[test]
 fn qr_pairing_is_passwordless_single_device_and_syncs_both_ways() {
     use pastazzo_sync::pairing;
     let (_, _, links) = start_server(1);
@@ -214,6 +443,13 @@ fn qr_requests_reject_swaps_reuse_cancellation_and_revoked_owners() {
 /// Starts a server on a free local port and returns its URL, its
 /// fingerprint and invite links made the way the admin CLI makes them.
 fn start_server(invites: usize) -> (String, [u8; 32], Vec<String>) {
+    start_server_with_receipts(invites, Arc::new(std::sync::atomic::AtomicBool::new(true)))
+}
+
+fn start_server_with_receipts(
+    invites: usize,
+    receipts: Arc<std::sync::atomic::AtomicBool>,
+) -> (String, [u8; 32], Vec<String>) {
     let keys = ServerKeys::generate(&mut OsRng);
     let fingerprint = keys.identity().fingerprint();
     let store = Store::open(Path::new(":memory:")).unwrap();
@@ -235,7 +471,23 @@ fn start_server(invites: usize) -> (String, [u8; 32], Vec<String>) {
             .block_on(async move {
                 let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
                 address_tx.send(listener.local_addr().unwrap()).unwrap();
-                axum::serve(listener, router(app)).await.unwrap();
+                let routes = router(app).layer(axum::middleware::from_fn(
+                    move |request: axum::extract::Request, next: axum::middleware::Next| {
+                        let receipts = receipts.clone();
+                        async move {
+                            if request.uri().path() == "/v1/receipts"
+                                && !receipts.load(std::sync::atomic::Ordering::SeqCst)
+                            {
+                                axum::response::IntoResponse::into_response(
+                                    axum::http::StatusCode::NOT_FOUND,
+                                )
+                            } else {
+                                next.run(request).await
+                            }
+                        }
+                    },
+                ));
+                axum::serve(listener, routes).await.unwrap();
             });
     });
     let url = format!("http://{}", address_rx.recv().unwrap());
@@ -264,6 +516,8 @@ struct FakeClipboard {
     remembered: Arc<Mutex<Vec<Content>>>,
     origins: Arc<Mutex<Vec<String>>>,
     cleared: Arc<Mutex<usize>>,
+    linked: Arc<Mutex<Vec<pastazzo_core::Id>>>,
+    fail_save: Arc<std::sync::atomic::AtomicBool>,
     echo: bool,
 }
 
@@ -277,10 +531,24 @@ impl FakeClipboard {
 }
 
 impl Clipboard for FakeClipboard {
+    fn link_sync(&mut self, _: &Content, header: &pastazzo_core::item::ItemHeader) -> Result<()> {
+        self.linked.lock().unwrap().push(header.id);
+        Ok(())
+    }
+    fn contains_stored(&self, content: &Content) -> bool {
+        self.applied.lock().unwrap().contains(content)
+            || self.remembered.lock().unwrap().contains(content)
+    }
     fn poll(&mut self) -> Vec<Content> {
         std::mem::take(&mut *self.copies.lock().unwrap())
     }
     fn apply(&mut self, content: &Content, origin: &str) -> Result<()> {
+        if self
+            .fail_save
+            .swap(false, std::sync::atomic::Ordering::SeqCst)
+        {
+            return Err("synthetic storage failure".into());
+        }
         self.applied.lock().unwrap().push(content.clone());
         self.origins.lock().unwrap().push(origin.to_owned());
         if self.echo {
@@ -289,6 +557,12 @@ impl Clipboard for FakeClipboard {
         Ok(())
     }
     fn remember(&mut self, content: &Content, origin: &str) -> Result<()> {
+        if self
+            .fail_save
+            .swap(false, std::sync::atomic::Ordering::SeqCst)
+        {
+            return Err("synthetic storage failure".into());
+        }
         self.remembered.lock().unwrap().push(content.clone());
         self.origins.lock().unwrap().push(origin.to_owned());
         Ok(())
@@ -521,9 +795,13 @@ fn failed_upload_survives_restart_and_is_retried_without_duplicates() {
     drop(offline);
     let mut restored = State::load_with(&sender_path, &NoKeychain).unwrap();
     restored.server_url = url;
-    let (restarted, _) = device(restored, &sender_path, false);
+    let (restarted, restarted_clipboard) = device(restored, &sender_path, false);
     let (receiver, clipboard) = device(receiver, &receiver_path, false);
     restarted.send_new_copies();
+    assert!(
+        restarted_clipboard.linked.lock().unwrap().is_empty(),
+        "An old queued event must not rebind a fresh history copy with identical content"
+    );
     receiver.receive_once(0).unwrap();
     assert_eq!(clipboard.applied(), [content]);
     assert!(!file.exists());

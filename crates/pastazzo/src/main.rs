@@ -1,3 +1,4 @@
+use serde::{Deserialize, Serialize};
 use std::env;
 use std::fs::{self, DirBuilder, OpenOptions};
 use std::io::{self, Read, Write};
@@ -18,8 +19,25 @@ struct Item {
     mime: String,
     text: String,
     path: String,
-    /// The device the item was synced from; empty for local copies.
+    /// Device of origin. Application and usage stay in separate metadata.
     origin: String,
+    metadata: Metadata,
+    delivery: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+struct Metadata {
+    source_app: String,
+    copied_at: u128,
+    sync_id: String,
+}
+
+#[derive(Default)]
+struct CaptureOptions {
+    origin: String,
+    source_app: String,
+    ignore_replay: bool,
 }
 
 fn main() {
@@ -35,16 +53,16 @@ fn run() -> Result<(), String> {
 
     match command.as_str() {
         "add" => {
-            let (_, origin) = split_origin(args.collect())?;
-            add_from_stdin(&origin)
+            let (_, options) = split_origin(args.collect())?;
+            add_from_stdin(&options)
         }
         "add-image" => {
-            let (positional, origin) = split_origin(args.collect())?;
+            let (positional, options) = split_origin(args.collect())?;
             let mime = positional
                 .first()
                 .cloned()
                 .unwrap_or_else(|| "image/png".to_string());
-            add_image_from_stdin(&mime, &origin)
+            add_image_from_stdin(&mime, &options)
         }
         "search" => {
             let query = args.collect::<Vec<_>>().join(" ");
@@ -61,14 +79,25 @@ fn run() -> Result<(), String> {
         "touch" => {
             let id = args.next().ok_or("missing item id")?;
             let new_id = touch_item(&id)?;
+            if args.next().as_deref() == Some("--replay") {
+                let dir = history_dir()?;
+                write_private(&replay_path(&dir), new_id.as_bytes())
+                    .map_err(|err| format!("mark clipboard replay: {err}"))?;
+            }
             println!("{new_id}");
             Ok(())
+        }
+        "link-sync" => {
+            let sync_id = args.next().ok_or("missing sync item id")?;
+            let mime = args.next().ok_or("missing item mime")?;
+            link_sync(&sync_id, &mime)
         }
         "clear" => {
             let dir = items_dir()?;
             if dir.exists() {
                 fs::remove_dir_all(&dir).map_err(|err| format!("clear history: {err}"))?;
             }
+            let _ = fs::remove_file(replay_path(&dir));
             Ok(())
         }
         "path" => {
@@ -80,21 +109,24 @@ fn run() -> Result<(), String> {
 }
 
 /// Splits `--origin <device>` from the other arguments.
-fn split_origin(args: Vec<String>) -> Result<(Vec<String>, String), String> {
+fn split_origin(args: Vec<String>) -> Result<(Vec<String>, CaptureOptions), String> {
     let mut positional = Vec::new();
-    let mut origin = String::new();
+    let mut options = CaptureOptions::default();
     let mut args = args.into_iter();
     while let Some(arg) = args.next() {
-        if arg == "--origin" {
-            origin = args.next().ok_or("--origin needs a device name")?;
-        } else {
-            positional.push(arg);
+        match arg.as_str() {
+            "--origin" => options.origin = args.next().ok_or("--origin needs a device name")?,
+            "--source-app" => {
+                options.source_app = args.next().ok_or("--source-app needs an app")?
+            }
+            "--ignore-replay" => options.ignore_replay = true,
+            _ => positional.push(arg),
         }
     }
-    Ok((positional, origin))
+    Ok((positional, options))
 }
 
-fn add_from_stdin(origin: &str) -> Result<(), String> {
+fn add_from_stdin(options: &CaptureOptions) -> Result<(), String> {
     let mut bytes = Vec::new();
     io::stdin()
         .take((MAX_TEXT_BYTES + 1) as u64)
@@ -113,6 +145,9 @@ fn add_from_stdin(origin: &str) -> Result<(), String> {
     let dir = history_dir()?;
 
     let hash = fnv1a64(text.as_bytes());
+    if options.ignore_replay && ignore_replay(&dir, hash, "txt")? {
+        return Ok(());
+    }
     remove_existing_hash(&dir, hash)?;
 
     let timestamp = now_millis()?;
@@ -120,14 +155,15 @@ fn add_from_stdin(origin: &str) -> Result<(), String> {
     let path = dir.join(format!("{id}.txt"));
 
     write_private(&path, text.as_bytes()).map_err(|err| format!("write item: {err}"))?;
-    write_origin(&dir, &id, origin)?;
+    write_origin(&dir, &id, &options.origin)?;
+    write_capture_metadata(&dir, &id, timestamp, options)?;
 
     prune_history(&dir)?;
     println!("{id}");
     Ok(())
 }
 
-fn add_image_from_stdin(mime: &str, origin: &str) -> Result<(), String> {
+fn add_image_from_stdin(mime: &str, options: &CaptureOptions) -> Result<(), String> {
     let mut bytes = Vec::new();
     io::stdin()
         .take((MAX_IMAGE_BYTES + 1) as u64)
@@ -145,6 +181,9 @@ fn add_image_from_stdin(mime: &str, origin: &str) -> Result<(), String> {
     let dir = history_dir()?;
 
     let hash = fnv1a64(&bytes);
+    if options.ignore_replay && ignore_replay(&dir, hash, image_extension(mime))? {
+        return Ok(());
+    }
     remove_existing_hash(&dir, hash)?;
 
     let timestamp = now_millis()?;
@@ -153,7 +192,8 @@ fn add_image_from_stdin(mime: &str, origin: &str) -> Result<(), String> {
     let path = dir.join(format!("{id}.{extension}"));
 
     write_private(&path, &bytes).map_err(|err| format!("write image item: {err}"))?;
-    write_origin(&dir, &id, origin)?;
+    write_origin(&dir, &id, &options.origin)?;
+    write_capture_metadata(&dir, &id, timestamp, options)?;
 
     prune_history(&dir)?;
     println!("{id}");
@@ -241,7 +281,9 @@ fn read_items() -> Result<Vec<Item>, String> {
             let text = fs::read_to_string(&path).unwrap_or_default();
             if !text.trim().is_empty() {
                 items.push(Item {
-                    origin: read_origin(&dir, &id),
+                    origin: device_origin(&read_origin(&dir, &id)),
+                    metadata: read_metadata(&dir, &id, timestamp),
+                    delivery: None,
                     id,
                     timestamp,
                     kind: "text".to_string(),
@@ -252,7 +294,9 @@ fn read_items() -> Result<Vec<Item>, String> {
             }
         } else if let Some(mime) = mime_from_image_extension(extension) {
             items.push(Item {
-                origin: read_origin(&dir, &id),
+                origin: device_origin(&read_origin(&dir, &id)),
+                metadata: read_metadata(&dir, &id, timestamp),
+                delivery: None,
                 id,
                 timestamp,
                 kind: "image".to_string(),
@@ -263,6 +307,28 @@ fn read_items() -> Result<Vec<Item>, String> {
         }
     }
 
+    let snapshot = fs::read(dir.parent().unwrap_or(&dir).join("sync/deliveries.json"))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok());
+    if let Some(snapshot) = snapshot
+        && let Some(deliveries) = snapshot["items"].as_array()
+    {
+        for item in &mut items {
+            item.delivery = deliveries
+                .iter()
+                .filter(|delivery| {
+                    !item.metadata.sync_id.is_empty()
+                        && delivery["item_id"].as_str() == Some(&item.metadata.sync_id)
+                })
+                .max_by_key(|delivery| delivery["created_at"].as_u64().unwrap_or(0))
+                .cloned()
+                .map(|mut delivery| {
+                    delivery["supported"] = snapshot["supported"].clone();
+                    delivery["peers"] = snapshot["peers"].clone();
+                    delivery
+                });
+        }
+    }
     items.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
     Ok(items)
 }
@@ -275,7 +341,7 @@ fn print_items_json(items: &[Item]) -> Result<(), String> {
         }
 
         print!(
-            "{{\"id\":\"{}\",\"timestamp\":{},\"kind\":\"{}\",\"mime\":\"{}\",\"preview\":\"{}\",\"text\":\"{}\",\"path\":\"{}\",\"origin\":\"{}\"}}",
+            "{{\"id\":\"{}\",\"timestamp\":{},\"kind\":\"{}\",\"mime\":\"{}\",\"preview\":\"{}\",\"text\":\"{}\",\"path\":\"{}\",\"origin\":\"{}\",\"source_app\":\"{}\",\"copied_at\":{},\"delivery\":{}}}",
             json_escape(&item.id),
             item.timestamp,
             json_escape(&item.kind),
@@ -284,6 +350,9 @@ fn print_items_json(items: &[Item]) -> Result<(), String> {
             json_escape(&item.text),
             json_escape(&item.path),
             json_escape(&item.origin),
+            json_escape(&item.metadata.source_app),
+            item.metadata.copied_at,
+            serde_json::to_string(&item.delivery).map_err(|err| err.to_string())?,
         );
     }
     println!("]");
@@ -327,11 +396,20 @@ fn item_preview(item: &Item) -> String {
 }
 
 fn searchable_text(item: &Item) -> String {
-    if item.kind == "image" {
-        return format!("image {} {} {}", item.mime, item.id, item.origin);
+    let mut devices = String::new();
+    if let Some(delivery) = &item.delivery {
+        devices.push_str(delivery["origin_name"].as_str().unwrap_or_default());
+        if let Some(receivers) = delivery["receivers"].as_array() {
+            for receiver in receivers {
+                devices.push(' ');
+                devices.push_str(receiver["device_name"].as_str().unwrap_or_default());
+            }
+        }
     }
-
-    format!("{}\n{}", item.text, item.origin)
+    format!(
+        "{} {} {} {} {} {} {}",
+        item.text, item.kind, item.mime, item.origin, item.metadata.source_app, devices, item.id
+    )
 }
 
 fn json_escape(input: &str) -> String {
@@ -409,7 +487,9 @@ fn prune_history(dir: &Path) -> Result<(), String> {
         let path = entry
             .map_err(|err| format!("read history entry: {err}"))?
             .path();
-        let orphan = path.extension().is_some_and(|ext| ext == "origin")
+        let orphan = path
+            .extension()
+            .is_some_and(|ext| ext == "origin" || ext == "meta")
             && path.file_stem().is_some_and(|stem| !kept.contains(stem));
         if orphan {
             let _ = fs::remove_file(path);
@@ -439,6 +519,145 @@ fn write_origin(dir: &Path, id: &str, origin: &str) -> Result<(), String> {
 
 fn read_origin(dir: &Path, id: &str) -> String {
     fs::read_to_string(origin_path(dir, id)).unwrap_or_default()
+}
+
+fn device_origin(origin: &str) -> String {
+    origin
+        .split(" ⇒ ")
+        .next()
+        .unwrap_or_default()
+        .split(" → ")
+        .next()
+        .unwrap_or_default()
+        .to_owned()
+}
+
+fn metadata_path(dir: &Path, id: &str) -> PathBuf {
+    dir.join(format!("{id}.meta"))
+}
+
+fn clean_app(app: &str) -> String {
+    app.chars()
+        .filter(|ch| !ch.is_control())
+        .take(MAX_ORIGIN_CHARS)
+        .collect::<String>()
+        .trim()
+        .to_owned()
+}
+
+fn read_metadata(dir: &Path, id: &str, timestamp: u128) -> Metadata {
+    if let Ok(bytes) = fs::read(metadata_path(dir, id))
+        && let Ok(metadata) = serde_json::from_slice::<Metadata>(&bytes)
+    {
+        return metadata;
+    }
+    // Keep the provenance recorded by older versions of the Wayland scripts.
+    let origin = read_origin(dir, id);
+    let source = origin.split(" ⇒ ").next().unwrap_or_default();
+    Metadata {
+        source_app: source
+            .split_once(" → ")
+            .map(|(_, app)| clean_app(app))
+            .unwrap_or_default(),
+        copied_at: timestamp,
+        sync_id: String::new(),
+    }
+}
+
+fn write_metadata(dir: &Path, id: &str, metadata: &Metadata) -> Result<(), String> {
+    let bytes = serde_json::to_vec(metadata).map_err(|err| format!("encode metadata: {err}"))?;
+    write_private(&metadata_path(dir, id), &bytes).map_err(|err| format!("write metadata: {err}"))
+}
+
+fn write_capture_metadata(
+    dir: &Path,
+    id: &str,
+    timestamp: u128,
+    options: &CaptureOptions,
+) -> Result<(), String> {
+    // Device-only captures keep the original file layout for existing clients.
+    if options.source_app.is_empty() {
+        return Ok(());
+    }
+    write_metadata(
+        dir,
+        id,
+        &Metadata {
+            source_app: clean_app(&options.source_app),
+            copied_at: timestamp,
+            sync_id: String::new(),
+        },
+    )
+}
+
+fn link_sync(sync_id: &str, mime: &str) -> Result<(), String> {
+    if sync_id.len() != 22
+        || !sync_id
+            .bytes()
+            .all(|ch| ch.is_ascii_alphanumeric() || b"-_".contains(&ch))
+    {
+        return Err("invalid sync item id".into());
+    }
+    let extension = if mime.starts_with("text/") {
+        "txt"
+    } else {
+        image_extension(mime)
+    };
+    let maximum = if extension == "txt" {
+        MAX_TEXT_BYTES
+    } else {
+        MAX_IMAGE_BYTES
+    };
+    let mut bytes = Vec::new();
+    io::stdin()
+        .take((maximum + 1) as u64)
+        .read_to_end(&mut bytes)
+        .map_err(|err| err.to_string())?;
+    if bytes.len() > maximum {
+        return Err("item too large".into());
+    }
+    let suffix = format!("-{:016x}", fnv1a64(&bytes));
+    let dir = history_dir()?;
+    let item = read_items()?
+        .into_iter()
+        .find(|item| {
+            item.id.ends_with(&suffix)
+                && Path::new(&item.path)
+                    .extension()
+                    .and_then(|ext| ext.to_str())
+                    == Some(extension)
+                && fs::read(&item.path).is_ok_and(|stored| stored == bytes)
+        })
+        .ok_or("item not found")?;
+    let mut metadata = item.metadata;
+    metadata.sync_id = sync_id.into();
+    write_metadata(&dir, &item.id, &metadata)
+}
+
+fn replay_path(dir: &Path) -> PathBuf {
+    dir.parent().unwrap_or(dir).join("clipboard-replay")
+}
+
+fn ignore_replay(dir: &Path, hash: u64, extension: &str) -> Result<bool, String> {
+    let marker = replay_path(dir);
+    let id = fs::read_to_string(&marker).unwrap_or_default();
+    if id.is_empty() {
+        return Ok(false);
+    }
+    let _ = fs::remove_file(marker);
+    let timestamp = id
+        .split_once('-')
+        .and_then(|(ts, _)| ts.parse::<u128>().ok())
+        .unwrap_or_default();
+    if now_millis()?.saturating_sub(timestamp) > 5000 || !id.ends_with(&format!("-{hash:016x}")) {
+        return Ok(false);
+    }
+    item_path(&id)?;
+    if !dir.join(format!("{id}.{extension}")).is_file() {
+        return Ok(false);
+    }
+    println!("{id}");
+    Ok(true)
 }
 
 fn item_path(id: &str) -> Result<PathBuf, String> {
@@ -474,12 +693,28 @@ fn touch_item(id: &str) -> Result<String, String> {
         .extension()
         .and_then(|ext| ext.to_str())
         .ok_or("item has no extension")?;
-    let timestamp = now_millis()?;
+    let current_time = now_millis()?;
+    let previous_timestamp = id
+        .split_once('-')
+        .and_then(|(ts, _)| ts.parse().ok())
+        .unwrap_or(current_time);
+    // Reusing a clip must have a new id even within the same millisecond.
+    let timestamp = current_time.max(previous_timestamp.saturating_add(1));
+    let metadata = read_metadata(&dir, id, previous_timestamp);
     let new_id = format!("{timestamp:020}-{hash}");
     let new_path = dir.join(format!("{new_id}.{extension}"));
 
     fs::rename(&current_path, &new_path).map_err(|err| format!("touch item: {err}"))?;
     let _ = fs::rename(origin_path(&dir, id), origin_path(&dir, &new_id));
+    if metadata.copied_at != timestamp
+        || !metadata.source_app.is_empty()
+        || !metadata.sync_id.is_empty()
+    {
+        write_metadata(&dir, &new_id, &metadata)?;
+    }
+    if id != new_id {
+        let _ = fs::remove_file(metadata_path(&dir, id));
+    }
     prune_history(&dir)?;
     Ok(new_id)
 }

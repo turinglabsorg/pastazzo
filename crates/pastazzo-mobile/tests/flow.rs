@@ -165,6 +165,19 @@ fn mobile_flow(qr: bool) {
     .unwrap();
     let entries = first["items"].as_array().unwrap();
     assert_eq!(entries.len(), 3);
+    daemon.receive_once(0).unwrap();
+    let deliveries = daemon.delivery_snapshot().unwrap();
+    let desktop_copies = deliveries
+        .items
+        .iter()
+        .filter(|item| item.origin_name == "Mac Pro")
+        .collect::<Vec<_>>();
+    assert_eq!(desktop_copies.len(), 4);
+    assert!(
+        desktop_copies
+            .iter()
+            .all(|item| item.receivers.len() == 1 && item.receivers[0].device_name == "iPhone")
+    );
     assert!(
         entries
             .iter()

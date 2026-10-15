@@ -282,6 +282,65 @@ Clients announce items of 64 KiB or more before uploading them. The server keeps
 - **Per-device item signatures,** so items prove which device sent them.
 - Streaming encryption for items larger than the current limits.
 
+## Device delivery receipts
+
+Receipts use a separate, optional `GET`/`POST /v1/receipts` feed. They are never
+returned by `/v1/items`, so older clients retain their clipboard behavior. A
+404 from the receipt feed means unsupported; clients retain queued receipts
+and never infer a remote delivery from the successful upload of an item.
+
+Each receipt is a 341-byte envelope with the item-header layout:
+
+```text
+version(1) || receipt_id(16) || receiver_device(16) || u32be(epoch)
+    || u64be(received_at) || nonce(24) || ciphertext(272)
+```
+
+The encrypted plaintext before padding is `original_item_id(16) || signature(64)`.
+It is padded to 256 bytes and encrypted with XChaCha20-Poly1305 under the
+`items` subkey. Domain separation is in the associated data:
+
+```text
+aad = transcript("pastazzo/v1/receipt", [account_id, receipt_id, receiver_device,
+    u32be(epoch), u64be(received_at)])
+signature = Ed25519(receiver_device_secret,
+    transcript("pastazzo/v1/receipt-signature", [account_id, receipt_id,
+        receiver_device, u32be(epoch), u64be(received_at), original_item_id]))
+```
+
+The receiver emits a receipt only after saving the actual text/image locally.
+It queues the sealed bytes privately before advancing its item cursor, and
+retries those exact bytes after an outage or restart. A receipt confirms local
+storage, not pasting into an application or user interaction. Receipts never
+cause clipboard changes and never trigger further receipts.
+
+Both endpoints require the existing approved-device request signature. POST
+also requires that the envelope's receiver matches the requesting device. It
+returns `{"cursor":N}`; identical retries retain the original cursor, and changed
+bytes under the same receipt id return 409. GET accepts an unsigned decimal
+`after` cursor, returns `{"cursor":N,"receipts":[base64url_envelope,...]}` with at
+most 100 entries, and has no long polling. Its cursor is independent of items.
+Receipts are isolated per account, retained for 30 days and capped at 10,000
+per account. Deleting all server items also deletes that account's receipts.
+
+Clients authenticate the encrypted receipt and the receiver's Ed25519 signature
+using its verified encrypted device record. They ignore unknown items/devices,
+wrong accounts, invalid signatures, future times beyond the permitted clock
+skew, and duplicate receiver acknowledgements for the same original item. The
+local ledger links exact sync item ids to history entries: content equality
+alone cannot transfer confirmations to a fresh copy of the same text/image.
+The receipt outbox and ledger use 0700 directories and 0600 files. Local receipt
+times use the receiving device's clock, with the existing clock-skew limits.
+Clients that have not been updated do not send acknowledgements; their delivery
+status remains unconfirmed. The server must be upgraded to enable the feed.
+
+An explicit `confirm-stored <sync-item-id>` repair on a receiver verifies an
+existing retained encrypted event and exact content in local history before
+issuing a receipt. It does not inherit another event's receipt, create history,
+change the clipboard or advance the item cursor. The receipt time records this
+verification, not a reconstructed historic delivery time. Stop normal sync
+while running this maintenance command so ledger writers remain serialized.
+
 ## Test vectors
 
 The tests in `crates/pastazzo-core/src/vectors.rs` check these values. `seq(x, n)` is the `n` bytes `x, x+1, ...`.
@@ -307,6 +366,8 @@ devices subkey          adea2ef7ba33f0dfe4c0e1d59414a2d976e2dbd11006aff29a7c4bc1
 wrapped account key     00000001c0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d727fad6fee9f14bfba715bcddc302c0038ccd76d6b29e5e44b991a40148a7d3471f30ef4d39c97d8d86d56d1a066dc95e
 sealed item length      341
 sealed item sha256      3229c379d25d2d04482546c64d06adfa82bab837bc1ad654795453b9ee0c5507
+sealed receipt length   341
+sealed receipt sha256   0d56d45cdd5df3268c7a06072e36860df01ebda706b503516cfbe6fbf252f383
 device signing public   8bb04e1c1b83dddf311f5bcddf7c50ede3c0802f47ec796e2a131cf41298d9f3
 device exchange public  392d174a38b3b1beafaf1fe824870841c5fa531bc6eafdb6402c124664488c1c
 request signature       ce199fd2e07212767c8fa317564c1d657e645eb926e274ab95b56c07b333f9c87f195f6a9e5c43792c0f778a3307c803df8be07b92fda3d80c8a1cfdab065c0c
@@ -324,5 +385,7 @@ pairing peer proof      633da9d50894a69d902cd2b4bc7518b29369522f438bbb59a8bc7fe1
 pairing grant length    293
 pairing grant sha256    adf592192d392feae3002513957f8b7e946ce450ce6d8d0ad0f541a58cfa2038
 ```
+
+The receipt vector uses the same account, key, receiver device and timestamp as the item vector, `receipt_id = seq(80,16)`, `original_item_id = seq(10,16)` and `nonce = seq(d0,24)`.
 
 The tests also run a full registration and login with a ChaCha20 RNG seeded with `42` × 32 and pin the resulting export key, session key and password file. Those values depend on how opaque-ke draws random numbers, so they're a regression check for this implementation, not vectors for another one: what they pin is the cipher suite, the Argon2id parameters, the identifiers and the context.

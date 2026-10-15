@@ -251,3 +251,10 @@ mod tests {
         );
     }
 }
+
+/// Separate receipt feed: old clients never see receipts as clipboard items.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ReceiptsPage {
+    pub cursor: u64,
+    pub receipts: Vec<B64>,
+}

@@ -84,7 +84,17 @@ impl Store {
                  received_at INTEGER NOT NULL,
                  UNIQUE (account, item_id)
              );
-             CREATE INDEX IF NOT EXISTS items_by_account ON items (account, seq);",
+             CREATE INDEX IF NOT EXISTS items_by_account ON items (account, seq);
+             CREATE TABLE IF NOT EXISTS receipts (
+                 seq INTEGER PRIMARY KEY AUTOINCREMENT,
+                 account BLOB NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+                 receipt_id BLOB NOT NULL,
+                 device BLOB NOT NULL,
+                 data BLOB NOT NULL,
+                 received_at INTEGER NOT NULL,
+                 UNIQUE (account, receipt_id)
+             );
+             CREATE INDEX IF NOT EXISTS receipts_by_account ON receipts (account, seq);",
         )?;
         // Databases from before device approval: their devices were all in.
         let columns: Vec<String> = db
@@ -381,8 +391,53 @@ impl Store {
         Ok(Some(seq))
     }
 
+    pub fn add_receipt(
+        &mut self,
+        account: &Id,
+        receipt: &Id,
+        device: &Id,
+        data: &[u8],
+        now: u64,
+    ) -> rusqlite::Result<Option<u64>> {
+        let tx = self.db.transaction()?;
+        let inserted = tx.execute(
+            "INSERT OR IGNORE INTO receipts (account, receipt_id, device, data, received_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![&account[..], &receipt[..], &device[..], data, now as i64])?;
+        if inserted == 0 {
+            return tx.query_row("SELECT seq FROM receipts WHERE account = ?1 AND receipt_id = ?2 AND device = ?3 AND data = ?4",
+                params![&account[..], &receipt[..], &device[..], data], |row| row.get::<_,i64>(0).map(|seq| seq as u64)).optional();
+        }
+        let cursor = tx.last_insert_rowid() as u64;
+        tx.execute(
+            "DELETE FROM receipts WHERE account = ?1 AND (received_at < ?2 OR seq <= (
+            SELECT seq FROM receipts WHERE account = ?1 ORDER BY seq DESC LIMIT 1 OFFSET 10000))",
+            params![&account[..], now.saturating_sub(ITEM_TTL_MS) as i64],
+        )?;
+        tx.commit()?;
+        Ok(Some(cursor))
+    }
+
+    pub fn receipts_after(
+        &self,
+        account: &Id,
+        after: u64,
+    ) -> rusqlite::Result<Vec<(u64, Vec<u8>)>> {
+        let mut statement = self.db.prepare(
+            "SELECT seq, data FROM receipts WHERE account = ?1 AND seq > ?2 ORDER BY seq LIMIT 100",
+        )?;
+        statement
+            .query_map(params![&account[..], after as i64], |row| {
+                Ok((row.get::<_, i64>(0)? as u64, row.get(1)?))
+            })?
+            .collect()
+    }
+
     /// Deletes every item of an account.
     pub fn delete_items(&self, account: &Id) -> rusqlite::Result<usize> {
+        self.db.execute(
+            "DELETE FROM receipts WHERE account = ?1",
+            params![&account[..]],
+        )?;
         self.db.execute(
             "DELETE FROM items WHERE account = ?1",
             params![&account[..]],
@@ -429,6 +484,49 @@ mod tests {
 
     fn store() -> Store {
         Store::open(Path::new(":memory:")).unwrap()
+    }
+
+    #[test]
+    fn receipts_are_separate_idempotent_and_isolated_per_account() {
+        let mut store = store();
+        store
+            .create_account(&[1; 16], "one", b"file", b"key", None, 0)
+            .unwrap();
+        store
+            .create_account(&[2; 16], "two", b"file", b"key", None, 0)
+            .unwrap();
+        let first = store
+            .add_receipt(&[1; 16], &[3; 16], &[4; 16], b"sealed", 1)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            store
+                .add_receipt(&[1; 16], &[3; 16], &[4; 16], b"sealed", 2)
+                .unwrap(),
+            Some(first)
+        );
+        assert_eq!(
+            store
+                .add_receipt(&[1; 16], &[3; 16], &[4; 16], b"changed", 2)
+                .unwrap(),
+            None
+        );
+        assert!(store.items_after(&[1; 16], 0, 50).unwrap().is_empty());
+        assert!(store.receipts_after(&[2; 16], 0).unwrap().is_empty());
+        let second = store
+            .add_receipt(&[2; 16], &[3; 16], &[4; 16], b"other", 3)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            store.receipts_after(&[1; 16], 0).unwrap(),
+            vec![(first, b"sealed".to_vec())]
+        );
+        store.delete_items(&[1; 16]).unwrap();
+        assert!(store.receipts_after(&[1; 16], 0).unwrap().is_empty());
+        assert_eq!(
+            store.receipts_after(&[2; 16], 0).unwrap(),
+            vec![(second, b"other".to_vec())]
+        );
     }
 
     #[test]

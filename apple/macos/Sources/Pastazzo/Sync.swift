@@ -11,6 +11,7 @@ final class SyncMonitor: ObservableObject {
     @Published private(set) var localDevice = Host.current().localizedName ?? "This Mac"
     /// Devices that logged in and wait for approval.
     @Published private(set) var waitingDevices = 0
+    @Published private(set) var deliveryRevision: Date?
 
     private let directory: URL
     private var timer: Timer?
@@ -66,6 +67,9 @@ final class SyncMonitor: ObservableObject {
     }
 
     private func read() {
+        let attributes = try? FileManager.default.attributesOfItem(atPath: directory.appendingPathComponent("deliveries.json").path)
+        let revision = attributes?[.modificationDate] as? Date
+        if revision != deliveryRevision { deliveryRevision = revision }
         let device = decode(Info.self, "status.json")?.deviceName ?? Host.current().localizedName ?? "This Mac"
         if device != localDevice {
             localDevice = device

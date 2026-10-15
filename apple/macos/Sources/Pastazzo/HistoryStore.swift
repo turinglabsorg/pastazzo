@@ -11,11 +11,17 @@ struct HistoryItem: Decodable, Identifiable, Equatable {
     let path: String
     /// The device it was synced from; empty for copies made on this Mac.
     let origin: String
+    let sourceApp: String
+    let copiedAt: Double
+    let delivery: DeliveryStatus?
 
     var isImage: Bool { kind == "image" }
 
     private enum CodingKeys: String, CodingKey {
         case id, timestamp, kind, mime, preview, text, path, origin
+        case sourceApp = "source_app"
+        case copiedAt = "copied_at"
+        case delivery
     }
 
     init(from decoder: Decoder) throws {
@@ -29,6 +35,13 @@ struct HistoryItem: Decodable, Identifiable, Equatable {
         path = try container.decode(String.self, forKey: .path)
         // Older pastazzo CLIs don't record it.
         origin = try container.decodeIfPresent(String.self, forKey: .origin) ?? ""
+        sourceApp = try container.decodeIfPresent(String.self, forKey: .sourceApp) ?? ""
+        copiedAt = try container.decodeIfPresent(Double.self, forKey: .copiedAt) ?? timestamp
+        if let data = try? container.decodeIfPresent(DeliveryStatus.self, forKey: .delivery) {
+            delivery = data
+        } else {
+            delivery = nil
+        }
     }
     var date: Date { Date(timeIntervalSince1970: timestamp / 1000) }
 }

@@ -31,6 +31,9 @@ fn upload_queued(root: &Path, state: &State, path: &Path) -> Result<()> {
     let content = sealed
         .open(&state.account_key, &state.account)
         .map_err(|e| e.to_string())?;
+    let tracker =
+        pastazzo_sync::delivery::Tracker::new(&root.join("sync.json"), &state.device.id());
+    tracker.track(&sealed.header, &content, &state.device_name)?;
     let id = B64::encode(&sealed.header.id);
     let mut entry = history::read(root, &id).unwrap_or_else(|_| {
         history::Entry::new(
@@ -43,6 +46,7 @@ fn upload_queued(root: &Path, state: &State, path: &Path) -> Result<()> {
     });
     history::save(root, &entry)?;
     Remote::new(&state.server_url).post_item(state, &bytes)?;
+    tracker.uploaded(&sealed.header.id)?;
     entry.queued = false;
     history::save(root, &entry)?;
     std::fs::remove_file(path).map_err(|e| e.to_string())
@@ -88,6 +92,11 @@ pub fn execute(request: &Value, keychain: &dyn SecretBackend) -> Result<Value> {
                 Err(error) => return Err(error.to_string()),
             }
             history::clear(root)?;
+            match std::fs::remove_dir_all(path.with_extension("deliveries")) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.to_string()),
+            }
             Ok(json!({}))
         }
         "status" => {
@@ -222,6 +231,7 @@ pub fn execute(request: &Value, keychain: &dyn SecretBackend) -> Result<Value> {
         "refresh" => {
             let mut state = State::load_with(&path, keychain)?;
             flush_outbox(root, &state)?;
+            let tracker = pastazzo_sync::delivery::Tracker::new(&path, &state.device.id());
             let devices = account::devices(&state)?;
             let page = Remote::new(&state.server_url).items(&state, state.cursor, 0)?;
             for bytes in page.items {
@@ -234,26 +244,34 @@ pub fn execute(request: &Value, keychain: &dyn SecretBackend) -> Result<Value> {
                     .map_err(|e| e.to_string())?;
                 if content == Content::ClearHistory {
                     history::clear(root)?;
+                    tracker.clear()?;
                     continue;
                 }
                 let id = B64::encode(&sealed.header.id);
-                if history::read(root, &id).is_ok() {
-                    continue;
-                }
                 let origin = devices
                     .iter()
                     .find(|d| d.id == sealed.header.device)
                     .map(|d| d.name.clone())
                     .unwrap_or("Another device".into());
-                history::save(
-                    root,
-                    &history::Entry::new(id, sealed.header.created_at, origin, &content, false),
-                )?;
+                if history::read(root, &id).is_err() {
+                    history::save(
+                        root,
+                        &history::Entry::new(
+                            id,
+                            sealed.header.created_at,
+                            origin.clone(),
+                            &content,
+                            false,
+                        ),
+                    )?;
+                }
+                tracker.received(&state, &sealed.header, &content, &origin)?;
             }
             state.cursor = page.cursor;
             state.save(&path)?;
             history::prune(root)?;
-            Ok(json!({}))
+            let delivery_error = tracker.sync(&state, &Remote::new(&state.server_url)).err();
+            Ok(json!({"delivery_error": delivery_error}))
         }
         "logout" => {
             let state = State::load_with(&path, keychain)?;

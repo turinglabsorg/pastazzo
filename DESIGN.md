@@ -10,6 +10,7 @@ Pastazzo is a quiet clipboard shelf with a citrus identity. Content and its prov
 - Spacing follows 4, 8, 12, 16, 20, and 24 point steps. iOS content has 20 point horizontal margins. macOS settings use 20 point margins.
 - Cards use 16 point radii on iOS, 8 on macOS. Fields, sheets, confirmations, and navigation use native controls.
 - Every clipboard card shows its device. Local items use the computer name even before login. Additional source metadata must distinguish the application observed at copy time from a verified sending device.
+- macOS cards put device delivery below the preview: a green check and confirmed receiver names, with awaiting devices in secondary text. Hovering shows receipt dates and explains that confirmation means local storage. A server upload, a queued item, unavailable receipt support, and an unconfirmed legacy item have distinct neutral labels. Receipt updates refresh an open shelf without resetting keyboard selection.
 - Sync state must distinguish local use, connecting, waiting for approval, connected, and a connection error. Never hide a failed operation behind a connected label.
 - iOS reads the clipboard only after a deliberate paste action. Receiving history never writes the system clipboard; tapping Copy does.
 - iOS setup starts with Scan Mac QR. The Mac shows a high-contrast temporary QR on white with a quiet zone, expiry, and a confirmation for the requesting device. Manual server, fingerprint, username, and secure password fields live under Connect manually. Passwords never go in command arguments or logs.

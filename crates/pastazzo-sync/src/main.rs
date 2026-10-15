@@ -32,6 +32,7 @@ const USAGE: &str = "usage:
   pastazzo-sync login --server <url> --fingerprint <fp> --username <name> [--name <device name>]
   pastazzo-sync run
   pastazzo-sync send <text>
+  pastazzo-sync confirm-stored <sync-item-id>
   pastazzo-sync status [--json]
   pastazzo-sync devices
   pastazzo-sync approve [<device id>] [--yes]
@@ -256,6 +257,18 @@ fn run() -> Result<()> {
         "run" => daemon::Daemon::new(State::load(&path)?, &path, clipboard::platform()?)
             .with_status_dir(clipboard::data_dir()?.join("sync"))?
             .run(),
+        "confirm-stored" => {
+            let id = args.positional.first().ok_or("missing sync item id")?;
+            let id: Id = B64::decode(id)
+                .ok_or("invalid sync item id")?
+                .try_into()
+                .map_err(|_| "invalid sync item id")?;
+            daemon::Daemon::new(State::load(&path)?, &path, clipboard::platform()?)
+                .with_status_dir(clipboard::data_dir()?.join("sync"))?
+                .confirm_stored(&id)?;
+            println!("confirmed: existing local history verified; clipboard unchanged");
+            Ok(())
+        }
         "send" => {
             let text = args.positional.join(" ");
             if text.is_empty() {
@@ -390,6 +403,17 @@ fn run() -> Result<()> {
         "clear" => {
             daemon::cancel_pending(&path)?;
             clipboard::platform()?.clear_history()?;
+            match std::fs::remove_dir_all(path.with_extension("deliveries")) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.to_string()),
+            }
+            let published = clipboard::data_dir()?.join("sync/deliveries.json");
+            match std::fs::remove_file(published) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.to_string()),
+            }
             if args.option("everywhere").is_none() {
                 println!("history cleared on this device");
                 return Ok(());

@@ -16,6 +16,7 @@ pub mod item;
 pub mod opaque;
 pub mod pad;
 pub mod pairing;
+pub mod receipt;
 pub mod registration;
 pub mod request;
 pub mod server;

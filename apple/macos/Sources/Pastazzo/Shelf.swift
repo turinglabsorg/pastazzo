@@ -17,13 +17,16 @@ final class ShelfModel: ObservableObject {
 
     var selected: HistoryItem? { items.indices.contains(selection) ? items[selection] : nil }
 
-    func search(delay: TimeInterval = 0.08) {
+    func search(delay: TimeInterval = 0.08, preservingSelection: Bool = false) {
         pendingSearch?.cancel()
         let work = DispatchWorkItem { [weak self] in
             guard let self = self else { return }
-            self.store.search(self.query) { items in
+            let query = self.query
+            self.store.search(query) { items in
+                guard self.query == query else { return }
+                let selectedId = preservingSelection ? self.selected?.id : nil
                 self.items = items
-                self.selection = 0
+                self.selection = selectedId.flatMap { id in items.firstIndex { $0.id == id } } ?? 0
             }
         }
         pendingSearch = work
@@ -250,6 +253,7 @@ struct ShelfView: View {
         .padding(14)
         .background(VisualEffectView().clipShape(RoundedRectangle(cornerRadius: 14)))
         .onChange(of: model.query) { _ in model.search() }
+        .onChange(of: sync.deliveryRevision) { _ in model.search(delay: 0, preservingSelection: true) }
         .onAppear { DispatchQueue.main.async { searchFocused = true } }
     }
 }
@@ -292,6 +296,23 @@ struct CardView: View {
                     .lineLimit(9)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             }
+
+            VStack(alignment: .leading, spacing: 3) {
+                Label {
+                    Text(item.delivery?.summary ?? "Delivery unconfirmed")
+                        .foregroundColor(item.delivery?.confirmed.isEmpty == false ? .primary : .secondary)
+                } icon: {
+                    Image(systemName: item.delivery == nil ? "questionmark.circle" : (item.delivery?.confirmed.isEmpty == false ? "checkmark.circle" : "arrow.up.circle"))
+                        .foregroundColor(item.delivery?.confirmed.isEmpty == false ? .green : .secondary)
+                }
+                .lineLimit(2)
+                if let pending = item.delivery?.pendingSummary {
+                    Text(pending).foregroundColor(.secondary).lineLimit(1)
+                }
+            }
+            .font(.caption2)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .help(item.delivery?.detail ?? "There are no device delivery confirmations for this item.")
         }
         .padding(10)
         .frame(width: 180, height: 180)

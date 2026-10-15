@@ -216,11 +216,14 @@ pub struct Daemon {
     last_sender: Arc<Mutex<String>>,
     approvals_checked: Arc<Mutex<Option<Instant>>>,
     outbox_checked: Arc<Mutex<Option<Instant>>>,
+    delivery: Arc<Mutex<crate::delivery::Tracker>>,
 }
 
 impl Daemon {
     pub fn new(state: State, state_path: &Path, clipboard: Box<dyn Clipboard>) -> Self {
+        let delivery = crate::delivery::Tracker::new(state_path, &state.device.id());
         Self {
+            delivery: Arc::new(Mutex::new(delivery)),
             remote: Arc::new(Remote::new(&state.server_url)),
             cursor: Arc::new(Mutex::new(state.cursor)),
             state: Arc::new(state),
@@ -257,6 +260,7 @@ impl Daemon {
         )?;
         {
             let mut status = self.status.lock().unwrap();
+            self.delivery.lock().unwrap().with_published(&dir)?;
             status.dir = Some(dir);
             // Nothing from a previous run is still moving.
             status.write(Vec::new());
@@ -339,7 +343,15 @@ impl Daemon {
         self.shared.lock().unwrap().first_sight(header.id);
 
         let path = self.queue_item(&sealed, &header)?;
+        self.delivery
+            .lock()
+            .unwrap()
+            .track(&header, content, &state.device_name)?;
+        if let Err(error) = self.clipboard.lock().unwrap().link_sync(content, &header) {
+            log!("{error}");
+        }
         self.upload(&sealed, &header.id)?;
+        self.delivery.lock().unwrap().uploaded(&header.id)?;
         remove_sent(&path)
     }
 
@@ -401,9 +413,15 @@ impl Daemon {
             if item.header.device != self.state.device.id() {
                 return Err("queued copy belongs to another device".into());
             }
-            item.open(&self.state.account_key, &self.state.account)
+            let content = item
+                .open(&self.state.account_key, &self.state.account)
                 .map_err(|_| "queued copy belongs to another account")?;
+            self.delivery
+                .lock()
+                .unwrap()
+                .track(&item.header, &content, &self.state.device_name)?;
             self.upload(&bytes, &item.header.id)?;
+            self.delivery.lock().unwrap().uploaded(&item.header.id)?;
             remove_sent(&path)?;
         }
         Ok(())
@@ -607,32 +625,95 @@ impl Daemon {
 
         for bytes in &page.items {
             if let Err(error) = self.handle(&bytes.0) {
-                log!("skipped an item: {error}");
+                return Err(format!("could not save an item: {error}"));
             }
         }
         if page.cursor != cursor {
             *self.cursor.lock().unwrap() = page.cursor;
             self.state.save_with_cursor(&self.state_path, page.cursor)?;
         }
+        if let Err(error) = self
+            .delivery
+            .lock()
+            .unwrap()
+            .sync(&self.state, &self.remote)
+        {
+            log!("couldn't refresh delivery confirmations: {error}");
+        }
         Ok(())
     }
 
+    /// Rechecks a specific authenticated sync event against content already saved
+    /// locally. Useful after upgrading a receiver that did not send receipts.
+    /// Does not move the receive cursor, add history, or touch the clipboard.
+    pub fn confirm_stored(&self, item: &Id) -> Result<()> {
+        let mut cursor = 0;
+        for _ in 0..100 {
+            let page = self.remote.items(&self.state, cursor, 0)?;
+            for bytes in &page.items {
+                let Ok(sealed) = SealedItem::from_bytes(&bytes.0) else {
+                    continue;
+                };
+                if &sealed.header.id != item {
+                    continue;
+                }
+                if sealed.header.device == self.state.device.id() {
+                    return Err("cannot confirm your own upload".into());
+                }
+                let content = sealed
+                    .open(&self.state.account_key, &self.state.account)
+                    .map_err(|e| e.to_string())?;
+                if matches!(content, Content::ClearHistory) {
+                    return Err("history clearing has no delivery receipt".into());
+                }
+                let origin = self.device_name(&sealed.header.device);
+                let mut clipboard = self.clipboard.lock().unwrap();
+                if !clipboard.contains_stored(&content) {
+                    return Err("this item is not saved in local history".into());
+                }
+                clipboard.link_sync(&content, &sealed.header)?;
+                drop(clipboard);
+                let tracker = self.delivery.lock().unwrap();
+                tracker.received(&self.state, &sealed.header, &content, &origin)?;
+                tracker.sync(&self.state, &self.remote)?;
+                if !tracker.snapshot()?.supported {
+                    return Err("the server does not support delivery confirmations".into());
+                }
+                return Ok(());
+            }
+            if page.cursor <= cursor {
+                break;
+            }
+            cursor = page.cursor;
+        }
+        Err("item unavailable in the retained server history".into())
+    }
+
+    pub fn delivery_snapshot(&self) -> Result<crate::delivery::Snapshot> {
+        self.delivery.lock().unwrap().snapshot()
+    }
+
     fn handle(&self, bytes: &[u8]) -> Result<()> {
-        let sealed = SealedItem::from_bytes(bytes).map_err(|e| e.to_string())?;
+        let Ok(sealed) = SealedItem::from_bytes(bytes) else {
+            return Ok(());
+        };
         if sealed.header.device == self.state.device.id() {
             return Ok(());
         }
-        let content = sealed
-            .open(&self.state.account_key, &self.state.account)
-            .map_err(|e| format!("can't open it ({e})"))?;
-        if !self.shared.lock().unwrap().first_sight(sealed.header.id) {
+        let Ok(content) = sealed.open(&self.state.account_key, &self.state.account) else {
+            return Ok(());
+        };
+        if self.shared.lock().unwrap().seen.contains(&sealed.header.id) {
             return Ok(());
         }
         let origin = self.device_name(&sealed.header.device);
         if content == Content::ClearHistory {
             log!("{origin} cleared the history on every device");
             remove_outbox(&self.outbox())?;
-            return self.clipboard.lock().unwrap().clear_history();
+            self.clipboard.lock().unwrap().clear_history()?;
+            self.delivery.lock().unwrap().clear()?;
+            self.shared.lock().unwrap().first_sight(sealed.header.id);
+            return Ok(());
         }
         let apply = {
             let mut shared = self.shared.lock().unwrap();
@@ -648,9 +729,16 @@ impl Daemon {
         };
         let mut clipboard = self.clipboard.lock().unwrap();
         if apply {
-            clipboard.apply(&content, &origin)
+            clipboard.apply(&content, &origin)?;
         } else {
-            clipboard.remember(&content, &origin)
+            clipboard.remember(&content, &origin)?;
         }
+        clipboard.link_sync(&content, &sealed.header)?;
+        self.delivery
+            .lock()
+            .unwrap()
+            .received(&self.state, &sealed.header, &content, &origin)?;
+        self.shared.lock().unwrap().first_sight(sealed.header.id);
+        Ok(())
     }
 }

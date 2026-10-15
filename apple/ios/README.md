@@ -28,6 +28,8 @@ Device keys use the protected local keychain, accessible only while unlocked and
 
 History groups identical text and image payloads into one card, using the latest copy's date and device. Comparison uses complete content, not the truncated preview. Existing duplicate files are grouped automatically; any pending upload remains visible as queued and retains its original encrypted item id.
 
+While refreshing, the app sends signed, encrypted device receipts after saving incoming items. The Mac shelf can then show this iPhone as a confirmed receiver. Receipts have their own durable outbox and optional server feed; older servers keep syncing normally while confirmations remain queued.
+
 ## Home Screen widgets
 
 Add Pastazzo from the iOS widget gallery. Paste & History is a medium widget with both actions; Paste and History are separate small widgets. Paste opens the app and imports the current text or image, then uses the ordinary encrypted outbox and sync flow. The iOS paste permission prompt applies. History opens the complete shelf and resets search and filters. These actions also use `pastazzo://paste` and `pastazzo://history`.

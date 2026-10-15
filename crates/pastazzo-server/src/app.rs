@@ -417,6 +417,7 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/v1/devices", get(list_devices))
         .route("/v1/devices/{id}", put(put_device).delete(revoke_device))
         .route("/v1/devices/{id}/grant", put(put_grant).get(get_grant))
+        .route("/v1/receipts", post(post_receipt).get(get_receipts))
         .route("/v1/items/announce", post(announce_item))
         .layer(DefaultBodyLimit::max(MAX_JSON_BYTES))
         .merge(items)
@@ -812,6 +813,50 @@ async fn post_item(
     Ok(Json(ItemPosted { cursor }))
 }
 
+async fn post_receipt(
+    State(app): State<Arc<App>>,
+    method: Method,
+    uri: Uri,
+    headers: HeaderMap,
+    body: Bytes,
+) -> ApiResult<Json<ItemPosted>> {
+    let (account, device) = app.authenticate_approved(&method, &uri, &headers, &body)?;
+    let receipt = pastazzo_core::receipt::SealedReceipt::from_bytes(&body)
+        .map_err(|_| bad("invalid receipt"))?;
+    if receipt.header.device != device {
+        return Err(ApiError(
+            StatusCode::FORBIDDEN,
+            "a device can only send its own receipts",
+        ));
+    }
+    let cursor = lock(&app.store)
+        .add_receipt(&account, &receipt.header.id, &device, &body, now())?
+        .ok_or(ApiError(StatusCode::CONFLICT, "receipt already received"))?;
+    Ok(Json(ItemPosted { cursor }))
+}
+
+#[derive(Deserialize)]
+struct ReceiptsQuery {
+    #[serde(default)]
+    after: u64,
+}
+
+async fn get_receipts(
+    State(app): State<Arc<App>>,
+    Query(query): Query<ReceiptsQuery>,
+    method: Method,
+    uri: Uri,
+    headers: HeaderMap,
+) -> ApiResult<Json<api::ReceiptsPage>> {
+    let (account, _) = app.authenticate_approved(&method, &uri, &headers, b"")?;
+    let receipts = lock(&app.store).receipts_after(&account, query.after)?;
+    let cursor = receipts.last().map(|(seq, _)| *seq).unwrap_or(query.after);
+    Ok(Json(api::ReceiptsPage {
+        cursor,
+        receipts: receipts.into_iter().map(|(_, data)| B64(data)).collect(),
+    }))
+}
+
 async fn delete_items(
     State(app): State<Arc<App>>,
     method: Method,
@@ -974,7 +1019,7 @@ mod tests {
         };
         let grant_path = format!("/v1/devices/{}/grant", B64::encode(&waiting.id()));
 
-        for path in ["/v1/items?after=0", "/v1/devices"] {
+        for path in ["/v1/items?after=0", "/v1/devices", "/v1/receipts?after=0"] {
             assert_eq!(
                 call(signed(&waiting, &app, &account, "GET", path)).await,
                 403,

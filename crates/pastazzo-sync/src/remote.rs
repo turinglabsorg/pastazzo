@@ -176,6 +176,21 @@ impl Remote {
         Ok(posted.cursor)
     }
 
+    pub fn post_receipt(&self, state: &State, sealed: &[u8]) -> Result<u64> {
+        let posted: ItemPosted =
+            Self::check(self.signed_send(state, "POST", "/v1/receipts", sealed)?)?;
+        Ok(posted.cursor)
+    }
+
+    /// None means an older server, not a delivery confirmation.
+    pub fn receipts(&self, state: &State, after: u64) -> Result<Option<api::ReceiptsPage>> {
+        let response = self.signed_get(state, &format!("/v1/receipts?after={after}"))?;
+        if response.status().as_u16() == 404 {
+            return Ok(None);
+        }
+        Self::check(response).map(Some)
+    }
+
     /// Tells the server a big item is coming, so the other devices can show it.
     pub fn announce(&self, state: &State, item: &Id, size: u64) -> Result<()> {
         let body = serde_json::to_vec(&ItemAnnounce {

@@ -18,7 +18,7 @@ use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-use pastazzo_core::item::{Content, MAX_IMAGE_BYTES, MAX_TEXT_BYTES};
+use pastazzo_core::item::{Content, ItemHeader, MAX_IMAGE_BYTES, MAX_TEXT_BYTES};
 
 use crate::{Result, log};
 
@@ -32,6 +32,15 @@ pub trait Clipboard: Send {
     fn remember(&mut self, content: &Content, origin: &str) -> Result<()>;
     /// Empties the local history, if there is one.
     fn clear_history(&mut self) -> Result<()>;
+    /// Whether this exact text/image is already saved in local history.
+    /// Used only by an explicit receipt recheck; never changes the clipboard.
+    fn contains_stored(&self, _content: &Content) -> bool {
+        false
+    }
+    /// Links a local history entry to this exact encrypted sync event.
+    fn link_sync(&mut self, _content: &Content, _header: &ItemHeader) -> Result<()> {
+        Ok(())
+    }
 }
 
 /// pastazzo's data directory: `$XDG_DATA_HOME/pastazzo`, else
@@ -252,6 +261,11 @@ impl PastazzoStore {
 }
 
 impl Clipboard for PastazzoStore {
+    fn contains_stored(&self, content: &Content) -> bool {
+        self.listing()
+            .iter()
+            .any(|name| Self::read(&self.items.join(name)).as_ref() == Some(content))
+    }
     fn poll(&mut self) -> Vec<Content> {
         let listing = self.listing();
         let mut new: Vec<&OsString> = listing
@@ -275,6 +289,35 @@ impl Clipboard for PastazzoStore {
 
     fn remember(&mut self, content: &Content, origin: &str) -> Result<()> {
         self.add_to_history(content, origin)
+    }
+
+    fn link_sync(&mut self, content: &Content, header: &ItemHeader) -> Result<()> {
+        let (mime, input): (&str, &[u8]) = match content {
+            Content::Text(text) => ("text/plain", text.as_bytes()),
+            Content::Image { mime, data } => (mime, data),
+            Content::ClearHistory => return Ok(()),
+        };
+        let mut child = Command::new(&self.cli)
+            .args([
+                "link-sync",
+                &pastazzo_core::api::B64::encode(&header.id),
+                mime,
+            ])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .spawn()
+            .map_err(|e| e.to_string())?;
+        child
+            .stdin
+            .take()
+            .ok_or("missing link input")?
+            .write_all(input)
+            .map_err(|e| e.to_string())?;
+        if child.wait().map_err(|e| e.to_string())?.success() {
+            Ok(())
+        } else {
+            Err("could not link sync item".into())
+        }
     }
 
     fn clear_history(&mut self) -> Result<()> {
