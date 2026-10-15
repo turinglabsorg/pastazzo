@@ -22,7 +22,11 @@ On a connected Mac, open Settings → Show Pairing QR. On iPhone, open Settings 
 
 Connect manually remains available for a server URL, username, password, and pinned server fingerprint. Approve that login only after comparing the codes on both devices.
 
-The app refreshes while active. iOS does not provide a general background clipboard monitor; this app does not promise continuous background sync. Received items enter history without changing the system clipboard. Tap Copy to write a local-only pasteboard item, or use the native paste button to deliberately import text. Share text, URLs, or an image from another app to save it in the protected shared inbox; open Pastazzo to import and sync it.
+The app refreshes while active. iOS does not provide a general background clipboard monitor; this app does not promise continuous background sync. Received items enter history without changing the system clipboard. Tap Copy to write a local-only pasteboard item, or use the native paste button to deliberately import text or an image. Share text, URLs, or an image from another app to save it in the protected shared inbox; open Pastazzo to import and sync it.
+
+Paste and Share use the same item-provider reader, including file-backed JPEG and HEIC photos. Images take priority over accompanying captions or URLs. ImageIO applies their orientation and converts the first frame to PNG, with a maximum long edge of 3072 pixels (2048 if needed to fit the 25 MB image limit). This bounds extension memory and produces a portable image for desktop clients. Invalid images report an error instead of silently saving their caption.
+
+The physical build must embed `PastazzoShare.appex`; both the app and share extension provisioning profiles must include `group.org.pastazzo.clipboard`. In Xcode, select the development team in Signing & Capabilities for both targets and let provisioning finish before building. A build without the share extension or its App Group cannot receive photos from the system share sheet. The widget target needs no App Group.
 
 Device keys use the protected local keychain, accessible only while unlocked and never synchronized through iCloud. Clipboard files use private permissions and protected application storage excluded from backups. The share extension does not hold account keys or make network requests. Failed uploads retain their original ciphertext and item id for an idempotent retry. Clearing local history cancels queued uploads on that iPhone.
 
@@ -43,7 +47,7 @@ cargo test --workspace
 cd apple/ios
 xcodebuild test -project Pastazzo.xcodeproj -scheme Pastazzo \
   -destination 'platform=iOS Simulator,name=iPhone 16 Pro' \
-  -derivedDataPath build CODE_SIGNING_ALLOWED=NO
+  -derivedDataPath build CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=-
 ```
 
-Rust integration tests use a real HTTP server and approved desktop/mobile devices. Native tests cover persistence through the C bridge, path rejection, explicit clipboard writes, share import across a restart without duplicate items, widget action URL validation, foreground text/image paste, and widget rendering in light and dark appearance. The share extension's host interface and physical-device signing still require device testing.
+Rust integration tests use a real HTTP server and approved desktop/mobile devices. Native tests cover persistence through the C bridge, path rejection, explicit clipboard writes, file-backed photo share import across a restart without duplicate items, JPEG/HEIC conversion and orientation, image precedence over captions, invalid images, widget action URL validation, foreground text/image paste, and widget rendering in light and dark appearance. Simulator builds use ad-hoc signing so the share extension receives its App Group entitlement; disabling signing cannot test the real shared container. Verify Photos → Share → Pastazzo → Post, then reopen Pastazzo and check the image card. Physical-device signing still requires device testing.

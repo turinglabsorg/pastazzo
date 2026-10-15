@@ -51,43 +51,45 @@ final class HistoryModel: ObservableObject {
 
     func save(text: String) async { await save(fields: ["text": text]) }
 
-    func pasteFromClipboard() async {
-        while UIApplication.shared.applicationState != .active {
-            do { try await Task.sleep(nanoseconds: 50_000_000) }
-            catch { return }
-        }
-        let clipboard = UIPasteboard.general
-        let hasText = clipboard.hasStrings
-        let text = hasText ? clipboard.string : nil
-        let image = !hasText && clipboard.hasImages ? clipboard.image : nil
-        guard text != nil || image != nil else {
-            message = "Copy text or an image first. If iOS asks, allow Pastazzo to paste."
-            return
-        }
+    func paste(_ providers: [NSItemProvider]) async {
         while busy {
             do { try await Task.sleep(nanoseconds: 50_000_000) }
             catch { return }
         }
         guard !Task.isCancelled else { return }
-        if let text { await save(text: text) }
-        else if let image { await save(image: image) }
-    }
-    func save(image: UIImage) async {
-        guard let data = image.pngData() else { message = "This image couldn't be read."; return }
-        await save(fields: ["kind": "image", "mime": "image/png", "data": Self.base64URL(data)])
+        busy = true
+        defer { busy = false }
+        do {
+            let copy = try await ClipboardImport.load(providers)
+            var fields: [String: Any] = ["name": device]
+            if let data = copy.data {
+                fields.merge(["kind": "image", "mime": "image/png", "data": Self.base64URL(data)]) { _, new in new }
+            } else if let text = copy.text { fields["text"] = text }
+            try await store(fields: fields)
+        } catch { message = error.localizedDescription }
     }
 
+    func pasteFromClipboard() async {
+        while UIApplication.shared.applicationState != .active {
+            do { try await Task.sleep(nanoseconds: 50_000_000) }
+            catch { return }
+        }
+        await paste(UIPasteboard.general.itemProviders)
+    }
     private func save(fields: [String: Any]) async {
         guard !busy else { return }
         busy = true
         defer { busy = false }
-        do {
-            var fields = fields
-            fields["name"] = device
-            let result = try await client.call("save", fields)
-            message = result["queued"] as? Bool == true ? "Saved. Sync will retry when you reconnect." : (connected ? "Saved and synced." : "Saved on this iPhone.")
-            try await readHistory()
-        } catch { message = error.localizedDescription }
+        do { try await store(fields: fields) }
+        catch { message = error.localizedDescription }
+    }
+
+    private func store(fields: [String: Any]) async throws {
+        var fields = fields
+        fields["name"] = device
+        let result = try await client.call("save", fields)
+        message = result["queued"] as? Bool == true ? "Saved. Sync will retry when you reconnect." : (connected ? "Saved and synced." : "Saved on this iPhone.")
+        try await readHistory()
     }
 
     func copy(_ item: MobileItem) async {

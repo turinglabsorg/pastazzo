@@ -40,12 +40,13 @@ struct ContentView: View {
                             .foregroundStyle(filter == name ? .orange : .secondary)
                         }
                         Spacer(minLength: 0)
-                        PasteButton(payloadType: String.self) { values in
-                            if let text = values.first { Task { await model.save(text: text) } }
+                        PasteButton(supportedContentTypes: ClipboardImport.supportedTypes) { providers in
+                            Task { await model.paste(providers) }
                         }
                         .labelStyle(.titleAndIcon)
                         .disabled(model.busy)
-                        .accessibilityLabel("Save text from clipboard")
+                        .accessibilityLabel("Save text or image from clipboard")
+                        .accessibilityIdentifier("pasteClipboard")
                     }
                     if let message = model.message {
                         Text(message).font(.footnote).foregroundStyle(.secondary).accessibilityIdentifier("statusMessage")
@@ -55,7 +56,7 @@ struct ContentView: View {
                             Image("PastazzoMark").resizable().frame(width: 88, height: 88)
                             Text(query.isEmpty ? "Keep a good copy." : "No matching copies")
                                 .font(.title2.weight(.semibold))
-                            Text(query.isEmpty ? "Save text with the paste button, or share text and images to Pastazzo from another app." : "Try a different search or filter.")
+                            Text(query.isEmpty ? "Save text or images with the paste button, or share them to Pastazzo from another app." : "Try a different search or filter.")
                                 .font(.body).foregroundStyle(.secondary).multilineTextAlignment(.center)
                             if !model.connected && query.isEmpty {
                                 Button("Connect your devices") { settings = true }.buttonStyle(.borderedProminent).tint(.orange)
