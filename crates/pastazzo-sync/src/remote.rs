@@ -27,12 +27,16 @@ pub struct Remote {
 
 impl Remote {
     pub fn new(server_url: &str) -> Self {
+        Self::with_timeout(server_url, Duration::from_secs(api::MAX_WAIT_SECONDS + 30))
+    }
+
+    pub fn with_timeout(server_url: &str, timeout: Duration) -> Self {
         let config = Agent::config_builder()
             .http_status_as_error(false)
             .timeout_resolve(Some(Duration::from_secs(10)))
             .timeout_connect(Some(Duration::from_secs(10)))
-            // Long enough for a long poll, short enough to notice a dead link.
-            .timeout_global(Some(Duration::from_secs(api::MAX_WAIT_SECONDS + 30)))
+            // Bound the whole exchange, including connection setup.
+            .timeout_global(Some(timeout))
             .build();
         Self {
             agent: config.into(),

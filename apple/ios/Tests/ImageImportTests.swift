@@ -99,6 +99,9 @@ final class ImageImportTests: XCTestCase {
         let png = try ClipboardImport.pngData(try XCTUnwrap(photo.jpegData(compressionQuality: 0.9)))
         XCTAssertEqual(UIImage(data: png)?.size, CGSize(width: 3072, height: 32))
         XCTAssertLessThanOrEqual(png.count, 25 * 1024 * 1024)
+        let shared = try ClipboardImport.pngData(try XCTUnwrap(photo.jpegData(compressionQuality: 0.9)), maxDimension: 2048)
+        XCTAssertEqual(UIImage(data: shared)?.size.width, 2048)
+        XCTAssertLessThanOrEqual(try XCTUnwrap(UIImage(data: shared)?.size.height), 22)
     }
 
     func testTextAndURLProvidersRemainSupported() async throws {

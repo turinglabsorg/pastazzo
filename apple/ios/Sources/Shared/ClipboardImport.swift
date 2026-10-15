@@ -6,10 +6,10 @@ enum ClipboardImport {
     static let supportedTypes: [UTType] = [.image, .url, .plainText]
     private static let imageLimit = 25 * 1024 * 1024
 
-    static func load(_ providers: [NSItemProvider], text: String = "") async throws -> SharedCopy {
+    static func load(_ providers: [NSItemProvider], text: String = "", maxImageDimension: Int = 3072) async throws -> SharedCopy {
         let id = UUID().uuidString
         if let provider = providers.first(where: { $0.hasItemConformingToTypeIdentifier(UTType.image.identifier) }) {
-            let data = try await imageData(from: provider)
+            let data = try await imageData(from: provider, maxDimension: maxImageDimension)
             return SharedCopy(id: id, kind: "image", text: nil, data: data, mime: "image/png")
         }
         var content = text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -26,14 +26,14 @@ enum ClipboardImport {
         return SharedCopy(id: id, kind: "text", text: content, data: nil, mime: nil)
     }
 
-    static func pngData(_ data: Data) throws -> Data {
+    static func pngData(_ data: Data, maxDimension: Int = 3072) throws -> Data {
         guard data.count <= imageLimit else { throw SharedInbox.tooLarge }
         guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { throw ImportError.image }
         let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any]
         let width = properties?[kCGImagePropertyPixelWidth] as? Int ?? 0
         let height = properties?[kCGImagePropertyPixelHeight] as? Int ?? 0
         guard width > 0, height > 0 else { throw ImportError.image }
-        let maxSize = min(3072, max(width, height))
+        let maxSize = min(max(1, maxDimension), max(width, height))
         var options: [CFString: Any] = [
             kCGImageSourceCreateThumbnailFromImageAlways: true,
             kCGImageSourceCreateThumbnailWithTransform: true,
@@ -54,7 +54,7 @@ enum ClipboardImport {
         return png
     }
 
-    private static func imageData(from provider: NSItemProvider) async throws -> Data {
+    private static func imageData(from provider: NSItemProvider, maxDimension: Int) async throws -> Data {
         let types = provider.registeredTypeIdentifiers.filter { UTType($0)?.conforms(to: .image) == true }
         var failure: Error = ImportError.image
         for type in types {
@@ -69,7 +69,7 @@ enum ClipboardImport {
                         } catch { continuation.resume(throwing: error) }
                     }
                 }
-                return try pngData(data)
+                return try pngData(data, maxDimension: maxDimension)
             } catch { failure = error }
             do {
                 let data: Data = try await withCheckedThrowingContinuation { continuation in
@@ -78,7 +78,7 @@ enum ClipboardImport {
                         else { continuation.resume(throwing: error ?? ImportError.image) }
                     }
                 }
-                return try pngData(data)
+                return try pngData(data, maxDimension: maxDimension)
             } catch { failure = error }
         }
         throw failure

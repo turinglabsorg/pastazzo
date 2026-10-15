@@ -11,9 +11,9 @@ final class ShareViewController: SLComposeServiceViewController {
     }
 
     override func isContentValid() -> Bool {
-        !(contentText ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || providers.contains {
+        !saving && (!(contentText ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || providers.contains {
             $0.hasItemConformingToTypeIdentifier(UTType.image.identifier) || $0.hasItemConformingToTypeIdentifier(UTType.url.identifier)
-        }
+        })
     }
 
     private var providers: [NSItemProvider] {
@@ -23,19 +23,40 @@ final class ShareViewController: SLComposeServiceViewController {
     override func didSelectPost() {
         guard !saving else { return }
         saving = true
+        title = "Sending securely…"
+        validateContent()
         Task { @MainActor in
-            defer { saving = false }
+            defer { saving = false; title = "Save to Pastazzo"; validateContent() }
             do {
-                let copy = try await ClipboardImport.load(providers, text: contentText ?? "")
-                try SharedInbox.save(copy)
-                let alert = UIAlertController(title: "Saved", message: "Open Pastazzo to sync this copy with your devices.", preferredStyle: .alert)
-                alert.addAction(UIAlertAction(title: "Done", style: .default) { _ in self.extensionContext?.completeRequest(returningItems: [], completionHandler: nil) })
-                present(alert, animated: true)
+                let copy = try await ClipboardImport.load(providers, text: contentText ?? "", maxImageDimension: 2048)
+                await send(copy)
             } catch {
                 let alert = UIAlertController(title: "Couldn't save", message: error.localizedDescription, preferredStyle: .alert)
                 alert.addAction(UIAlertAction(title: "OK", style: .default))
                 present(alert, animated: true)
             }
+        }
+    }
+
+    private func send(_ copy: SharedCopy) async {
+        saving = true
+        title = "Sending securely…"
+        validateContent()
+        defer { saving = false; title = "Save to Pastazzo"; validateContent() }
+        do {
+            let outcome = try await SharedSender.send(copy)
+            let alert = UIAlertController(title: outcome.title, message: outcome.message, preferredStyle: .alert)
+            if outcome == .queued {
+                alert.addAction(UIAlertAction(title: "Retry now", style: .default) { _ in
+                    Task { @MainActor in await self.send(copy) }
+                })
+            }
+            alert.addAction(UIAlertAction(title: "Done", style: .default) { _ in self.extensionContext?.completeRequest(returningItems: [], completionHandler: nil) })
+            present(alert, animated: true)
+        } catch {
+            let alert = UIAlertController(title: "Couldn't save", message: error.localizedDescription, preferredStyle: .alert)
+            alert.addAction(UIAlertAction(title: "OK", style: .default))
+            present(alert, animated: true)
         }
     }
 

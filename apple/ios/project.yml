@@ -55,10 +55,14 @@ targets:
     sources:
       - Sources/Share
       - Sources/Shared
+    dependencies:
+      - framework: Frameworks/PastazzoMobile.xcframework
+        embed: false
     entitlements:
       path: PastazzoShare.entitlements
       properties:
         com.apple.security.application-groups: [group.org.pastazzo.clipboard]
+        keychain-access-groups: ["$(AppIdentifierPrefix)org.pastazzo.Pastazzo"]
     settings:
       base:
         APPLICATION_EXTENSION_API_ONLY: YES

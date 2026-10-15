@@ -23,6 +23,10 @@ fn string<'a>(request: &'a Value, key: &str) -> Result<&'a str> {
 }
 
 fn upload_queued(root: &Path, state: &State, path: &Path) -> Result<()> {
+    upload_queued_with(root, state, path, &Remote::new(&state.server_url))
+}
+
+fn upload_queued_with(root: &Path, state: &State, path: &Path, remote: &Remote) -> Result<()> {
     let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
     let sealed = SealedItem::from_bytes(&bytes).map_err(|e| e.to_string())?;
     if sealed.header.device != state.device.id() {
@@ -35,18 +39,16 @@ fn upload_queued(root: &Path, state: &State, path: &Path) -> Result<()> {
         pastazzo_sync::delivery::Tracker::new(&root.join("sync.json"), &state.device.id());
     tracker.track(&sealed.header, &content, &state.device_name)?;
     let id = B64::encode(&sealed.header.id);
+    let item_id = sealed.header.id;
+    let created_at = sealed.header.created_at;
+    drop(sealed);
     let mut entry = history::read(root, &id).unwrap_or_else(|_| {
-        history::Entry::new(
-            id,
-            sealed.header.created_at,
-            state.device_name.clone(),
-            &content,
-            true,
-        )
+        history::Entry::new(id, created_at, state.device_name.clone(), &content, true)
     });
+    drop(content);
     history::save(root, &entry)?;
-    Remote::new(&state.server_url).post_item(state, &bytes)?;
-    tracker.uploaded(&sealed.header.id)?;
+    remote.post_item(state, &bytes)?;
+    tracker.uploaded(&item_id)?;
     entry.queued = false;
     history::save(root, &entry)?;
     std::fs::remove_file(path).map_err(|e| e.to_string())
@@ -73,6 +75,119 @@ fn outbox(root: &Path, state: &State) -> std::path::PathBuf {
         .join(B64::encode(&state.device.id()))
 }
 
+fn share(request: &Value, root: &Path, keychain: &dyn SecretBackend) -> Result<Value> {
+    use std::io::Read;
+    let path = root.join("sync.json");
+    if !path.exists() {
+        return Err("open Pastazzo to connect this iPhone before direct sharing".into());
+    }
+    let state = State::load_with(&path, keychain)?;
+    let id: [u8; 16] = B64::decode(string(request, "id")?)
+        .and_then(|bytes| bytes.try_into().ok())
+        .ok_or("invalid shared item id")?;
+    let encoded = B64::encode(&id);
+    let content = if request.get("kind").and_then(Value::as_str) == Some("image") {
+        let input = root.join("share-input").join(format!("{encoded}.png"));
+        if std::fs::symlink_metadata(&input)
+            .map_err(|e| e.to_string())?
+            .file_type()
+            .is_symlink()
+        {
+            return Err("invalid shared image file".into());
+        }
+        let mut data = Vec::new();
+        std::fs::File::open(input)
+            .map_err(|e| e.to_string())?
+            .take(MAX_IMAGE_BYTES as u64 + 1)
+            .read_to_end(&mut data)
+            .map_err(|e| e.to_string())?;
+        if data.is_empty() || data.len() > MAX_IMAGE_BYTES {
+            return Err("images must be nonempty and at most 25 MB".into());
+        }
+        Content::Image {
+            mime: "image/png".into(),
+            data,
+        }
+    } else {
+        let text = string(request, "text")?;
+        if text.trim().is_empty() || text.len() > MAX_TEXT_BYTES {
+            return Err("text must be nonempty and at most 1 MB".into());
+        }
+        Content::Text(text.into())
+    };
+    let queued = outbox(root, &state).join(format!("{encoded}.sealed"));
+    let existing = history::read(root, &encoded).ok();
+    if let Some(entry) = &existing {
+        let matches = match &content {
+            Content::Text(text) => entry.kind == "text" && entry.text == *text,
+            Content::Image { mime, data } => {
+                entry.kind == "image" && entry.mime == *mime && entry.data.0 == *data
+            }
+            Content::ClearHistory => false,
+        };
+        if !matches {
+            return Err("item id already belongs to different content".into());
+        }
+        if !entry.queued && !queued.exists() {
+            return Ok(json!({"queued":false,"duplicate":true}));
+        }
+    }
+    let had_existing = existing.is_some();
+    drop(existing);
+    if queued.exists() {
+        let sealed = SealedItem::from_bytes(&std::fs::read(&queued).map_err(|e| e.to_string())?)
+            .map_err(|e| e.to_string())?;
+        if sealed.header.id != id
+            || sealed.header.device != state.device.id()
+            || sealed
+                .open(&state.account_key, &state.account)
+                .map_err(|e| e.to_string())?
+                != content
+        {
+            return Err("shared outbox item does not match the provided content".into());
+        }
+    } else {
+        if had_existing {
+            return Err("the queued shared item is missing".into());
+        }
+        let created_at = now();
+        let sealed = SealedItem::seal(
+            &state.account_key,
+            &state.account,
+            ItemHeader {
+                id,
+                device: state.device.id(),
+                epoch: state.account_key.epoch(),
+                created_at,
+            },
+            &content,
+            &mut OsRng,
+        )
+        .map_err(|e| e.to_string())?;
+        history::write(&queued, &sealed.to_bytes())?;
+        drop(sealed);
+        history::save(
+            root,
+            &history::Entry::new(
+                encoded,
+                created_at,
+                state.device_name.clone(),
+                &content,
+                true,
+            ),
+        )?;
+    }
+    drop(content);
+    let error = upload_queued_with(
+        root,
+        &state,
+        &queued,
+        &Remote::with_timeout(&state.server_url, std::time::Duration::from_secs(15)),
+    )
+    .err();
+    Ok(json!({"queued":error.is_some(),"sync_error":error}))
+}
+
 pub fn execute(request: &Value, keychain: &dyn SecretBackend) -> Result<Value> {
     let root = Path::new(string(request, "root")?);
     if !root.is_absolute() {
@@ -81,6 +196,7 @@ pub fn execute(request: &Value, keychain: &dyn SecretBackend) -> Result<Value> {
     history::private_dir(root)?;
     let path = root.join("sync.json");
     match string(request, "operation")? {
+        "share" => share(request, root, keychain),
         "history" => Ok(
             json!({"items": history::entries(root)?.iter().map(history::Entry::summary).collect::<Vec<_>>()}),
         ),

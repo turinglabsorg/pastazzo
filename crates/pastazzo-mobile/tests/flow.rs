@@ -258,6 +258,80 @@ fn mobile_flow(qr: bool) {
     .unwrap();
     let page = Remote::new(&server).items(&receiver, 0, 0).unwrap();
     assert_eq!(page.items.len(), 2);
+
+    let direct_id = B64::encode(&[82; 16]);
+    let direct = json!({"operation":"share","root":root,"id":direct_id,"text":"Direct share without opening the app"});
+    offline.save_new_with(&path, keychain.as_ref()).unwrap();
+    assert_eq!(execute(&direct, keychain.as_ref()).unwrap()["queued"], true);
+    let direct_file = queued_dir.join(format!("{direct_id}.sealed"));
+    let direct_ciphertext = std::fs::read(&direct_file).unwrap();
+    assert_eq!(execute(&direct, keychain.as_ref()).unwrap()["queued"], true);
+    assert_eq!(std::fs::read(&direct_file).unwrap(), direct_ciphertext);
+    offline.forget_with(&path, keychain.as_ref()).unwrap();
+    original.save(&path).unwrap();
+    assert_eq!(
+        execute(&direct, keychain.as_ref()).unwrap()["queued"],
+        false
+    );
+    assert!(!direct_file.exists());
+    assert_eq!(
+        execute(&direct, keychain.as_ref()).unwrap()["duplicate"],
+        true
+    );
+    let changed = json!({"operation":"share","root":root,"id":direct_id,"text":"Changed content must not reuse a share id"});
+    assert!(execute(&changed, keychain.as_ref()).is_err());
+    let photo_id = B64::encode(&[83; 16]);
+    std::fs::create_dir_all(root.join("share-input")).unwrap();
+    std::fs::write(
+        root.join("share-input").join(format!("{photo_id}.png")),
+        &image,
+    )
+    .unwrap();
+    assert_eq!(
+        execute(
+            &json!({"operation":"share","root":root,"id":photo_id,"kind":"image"}),
+            keychain.as_ref()
+        )
+        .unwrap()["queued"],
+        false
+    );
+    assert!(
+        execute(
+            &json!({"operation":"share","root":root,"id":"../../sync","kind":"image"}),
+            keychain.as_ref()
+        )
+        .is_err()
+    );
+    let page = Remote::new(&server).items(&receiver, 0, 0).unwrap();
+    assert_eq!(page.items.len(), 4);
+    let copies = page
+        .items
+        .iter()
+        .map(|bytes| {
+            let sealed = SealedItem::from_bytes(&bytes.0).unwrap();
+            sealed
+                .open(&receiver.account_key, &receiver.account)
+                .unwrap()
+        })
+        .collect::<Vec<_>>();
+    assert!(copies.contains(&Content::Text(
+        "Direct share without opening the app".into()
+    )));
+    assert!(copies.contains(&Content::Image {
+        mime: "image/png".into(),
+        data: image.clone()
+    }));
+    assert!(!String::from_utf8_lossy(&direct_ciphertext).contains("Direct share"));
+    keychain
+        .locked
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    assert!(execute(&json!({"operation":"share","root":root,"id":B64::encode(&[84;16]),"text":"Locked keys"}), keychain.as_ref()).is_err());
+    keychain
+        .locked
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+    let disconnected = root.join("unconnected");
+    assert!(execute(&json!({"operation":"share","root":disconnected,"id":B64::encode(&[84;16]),"text":"Not connected"}), keychain.as_ref()).is_err());
+    assert!(!disconnected.join("history").exists());
     std::fs::write(&queued_file, ciphertext).unwrap();
     execute(
         &json!({"operation":"clear_local","root":root}),

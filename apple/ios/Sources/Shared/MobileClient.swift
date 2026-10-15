@@ -6,8 +6,7 @@ final class MobileClient: @unchecked Sendable {
     private let queue = DispatchQueue(label: "org.pastazzo.mobile")
 
     init(root: URL? = nil) throws {
-        self.root = try root ?? FileManager.default.url(for: .applicationSupportDirectory,
-            in: .userDomainMask, appropriateFor: nil, create: true).appendingPathComponent("Pastazzo", isDirectory: true)
+        self.root = try root ?? SharedStorage.appRoot()
         try FileManager.default.createDirectory(at: self.root, withIntermediateDirectories: true,
             attributes: [.posixPermissions: 0o700, .protectionKey: FileProtectionType.complete])
         var protected = self.root
@@ -20,6 +19,8 @@ final class MobileClient: @unchecked Sendable {
         try await withCheckedThrowingContinuation { continuation in
             queue.async {
                 do {
+                    let lock = try StorageLock(self.root.appendingPathComponent(".client.lock"))
+                    defer { withExtendedLifetime(lock) {} }
                     var request = fields
                     request["operation"] = operation
                     request["root"] = self.root.path
