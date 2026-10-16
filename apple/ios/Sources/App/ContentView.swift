@@ -111,7 +111,7 @@ struct ContentView: View {
 
 private struct ClipboardCard: View {
     let item: MobileItem
-    let client: MobileClient
+    let client: any MobileClientCalling
     let copy: () -> Void
     @State private var image: UIImage?
 

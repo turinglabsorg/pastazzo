@@ -21,14 +21,16 @@ final class HistoryModel: ObservableObject {
     @Published var approvalCode: String?
     @Published var accountFingerprint = ""
     @Published var device = UIDevice.current.name
-    let client: MobileClient
+    let client: any MobileClientCalling
 
-    init(client: MobileClient) { self.client = client }
+    init(client: any MobileClientCalling) { self.client = client }
 
     func load(sync: Bool = true) async {
         guard !busy else { return }
         busy = true
         defer { busy = false }
+        do { try await readHistory() }
+        catch { message = error.localizedDescription }
         do {
             let status = try await client.call("status")
             connected = status["logged_in"] as? Bool ?? false

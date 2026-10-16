@@ -1,7 +1,7 @@
 import Foundation
 import PastazzoMobile
 
-final class MobileClient: @unchecked Sendable {
+final class MobileClient: MobileClientCalling, @unchecked Sendable {
     let root: URL
     private let queue = DispatchQueue(label: "org.pastazzo.mobile")
 
